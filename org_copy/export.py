@@ -211,11 +211,20 @@ def _attach_team_memberships(
             slugs = member.setdefault("teamSlugs", [])
             if slug not in slugs:
                 slugs.append(slug)
-            role = person.get("teamRole") or person.get("role")
+            role = person.get("teamRole") or _default_team_role(member)
             if role:
                 roles = member.setdefault("teamRoles", [])
                 if not any(item.get("teamSlug") == slug for item in roles if isinstance(item, dict)):
                     roles.append({"teamSlug": slug, "role": role})
+
+
+def _default_team_role(member: dict[str, Any]) -> str | None:
+    org_role = member.get("orgRole") or member.get("role")
+    if org_role == "member":
+        return "contributor"
+    if org_role in ("owner", "manager"):
+        return "admin"
+    return None
 
 
 def _attach_detectors(projects: list[dict[str, Any]], detectors: list[dict[str, Any]]) -> None:
