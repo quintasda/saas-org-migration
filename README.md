@@ -21,7 +21,6 @@ Source token:
 - `org:read`
 - `project:read`
 - `member:read`
-- `team:read`
 - `alerts:read`
 
 Destination token:
@@ -95,6 +94,15 @@ Apply writes the settings. Run it again to skip objects that already match by sl
 
 ```bash
 org-copy apply \
+  --dest-host https://de.sentry.io \
+  --dest-org DEST_ORG \
+  --dest-token "$DEST_TOKEN"
+```
+
+Update team admins runs after every invited member has accepted. Invites only add people to teams, so team roles are not copied. This command reads the same `snapshot.json` and sets `teamRole` to `admin` on the destination for members whose org role is `member` and who were admins of a team in the source. Owners, managers, admins, and billing members are not changed. It needs `member:write` on the destination token.
+
+```bash
+org-copy update-team-admins \
   --dest-host https://de.sentry.io \
   --dest-org DEST_ORG \
   --dest-token "$DEST_TOKEN"

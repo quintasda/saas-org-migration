@@ -137,6 +137,8 @@ class FakeSentry:
         member_team = re.fullmatch(rf"/organizations/{slug}/members/([^/]+)/teams/([^/]+)/?", path)
         if member_team and method == "POST":
             return self._add_member_team(org, member_team.group(1), member_team.group(2))
+        if member_team and method == "PUT":
+            return self._set_team_role(org, member_team.group(1), member_team.group(2), body)
 
         project_create = re.fullmatch(rf"/teams/{slug}/([^/]+)/projects/?", path)
         if project_create and method == "POST":
@@ -231,6 +233,18 @@ class FakeSentry:
             if team_slug not in slugs:
                 slugs.append(team_slug)
             return _ok(member, 201)
+        return _missing()
+
+    def _set_team_role(self, org: MemoryOrg, member_id: str, team_slug: str, body: dict[str, Any]) -> httpx.Response:
+        for member in org.members:
+            if str(member.get("id")) != member_id:
+                continue
+            if team_slug not in (member.get("teamSlugs") or []):
+                return _missing()
+            roles = [item for item in member.get("teamRoles") or [] if item.get("teamSlug") != team_slug]
+            roles.append({"teamSlug": team_slug, "role": body.get("teamRole")})
+            member["teamRoles"] = roles
+            return _ok({"teamRole": body.get("teamRole")})
         return _missing()
 
     def _collection(

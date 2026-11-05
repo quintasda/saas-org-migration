@@ -15,7 +15,7 @@ import httpx
 
 from org_copy.cli import main
 from org_copy.client import SentryClient, next_link
-from tests.fake_sentry import seed
+from tests.fake_sentry import FakeSentry, MemoryOrg, seed
 
 
 class ClientTests(unittest.TestCase):
@@ -177,6 +177,81 @@ class CopyTests(unittest.TestCase):
         self.assertEqual({item["key"] for item in dsn_map}, {"Production", "Loader"})
         self.assertTrue(all(item["dsn"].startswith("https://") for item in dsn_map))
         self.assertTrue(all("ingest.sentry.io" not in item["dsn"] or "de.sentry.io" in item["dsn"] for item in dsn_map))
+
+
+class TeamAdminTests(unittest.TestCase):
+    def test_promotes_only_org_members(self) -> None:
+        fake = FakeSentry()
+        dest = fake.add("de.sentry.io", MemoryOrg("sana-de", "2"))
+
+        def dest_member(member_id: str, email: str, org_role: str, pending: bool = False) -> dict:
+            return {
+                "id": member_id,
+                "email": email,
+                "orgRole": org_role,
+                "pending": pending,
+                "teamSlugs": ["backend"],
+                "teamRoles": [{"teamSlug": "backend", "role": None}],
+            }
+
+        dest.members = [
+            dest_member("1", "member@example.com", "member"),
+            dest_member("2", "manager@example.com", "manager"),
+            dest_member("3", "contrib@example.com", "member"),
+            dest_member("4", "pending@example.com", "member", pending=True),
+        ]
+
+        def source_member(email: str, org_role: str, team_role: str) -> dict:
+            return {
+                "email": email,
+                "orgRole": org_role,
+                "teamSlugs": ["backend"],
+                "teamRoles": [{"teamSlug": "backend", "role": team_role}],
+            }
+
+        snapshot = {
+            "members": [
+                source_member("member@example.com", "member", "admin"),
+                source_member("manager@example.com", "manager", "admin"),
+                source_member("contrib@example.com", "member", "contributor"),
+                source_member("pending@example.com", "member", "admin"),
+            ]
+        }
+        transport = httpx.MockTransport(fake.handle)
+        original = SentryClient.__init__
+
+        def patched(self, host: str, token: str, org: str, **kwargs: object) -> None:
+            kwargs["transport"] = transport
+            original(self, host, token, org, **kwargs)
+
+        previous = os.getcwd()
+        work = tempfile.TemporaryDirectory()
+        os.chdir(work.name)
+        SentryClient.__init__ = patched  # type: ignore[method-assign]
+        try:
+            Path("snapshot.json").write_text(json.dumps(snapshot))
+            code = _run(["update-team-admins", "--dest-org", "sana-de", "--dest-token", "de-token"])
+            self.assertEqual(code, 1)
+            puts = [call for call in dest.calls if call[0] == "PUT"]
+            self.assertEqual(puts, [("PUT", "/organizations/sana-de/members/1/teams/backend/")])
+            roles = {member["email"]: member["teamRoles"][0]["role"] for member in dest.members}
+            self.assertEqual(roles["member@example.com"], "admin")
+            self.assertIsNone(roles["manager@example.com"])
+            self.assertIsNone(roles["contrib@example.com"])
+            self.assertIsNone(roles["pending@example.com"])
+
+            dest.members[3]["pending"] = False
+            again = StringIO()
+            self.assertEqual(
+                _run(["update-team-admins", "--dest-org", "sana-de", "--dest-token", "de-token"], stdout=again),
+                0,
+            )
+            self.assertIn("skip team role admin for member@example.com on backend", again.getvalue())
+            self.assertIn("updated team role admin for pending@example.com on backend", again.getvalue())
+        finally:
+            SentryClient.__init__ = original  # type: ignore[method-assign]
+            os.chdir(previous)
+            work.cleanup()
 
 
 def _run(args: list[str], stdout: StringIO | None = None) -> int:
