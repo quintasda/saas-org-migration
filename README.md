@@ -14,13 +14,14 @@ pip install -e .
 
 ## Tokens
 
-Create one org auth token in the source organization and one in the destination organization. Each token is limited to that organization and region.
+Create one auth token in the source organization and one in the destination organization. We recommend creating an [Internal integration](https://docs.sentry.io/integrations/integration-platform/internal-integration/) in each organisation and use integration tokens.
 
 Source token:
 
 - `org:read`
 - `project:read`
 - `member:read`
+- `team:read`
 - `alerts:read`
 
 Destination token:
@@ -29,7 +30,7 @@ Destination token:
 - `project:write`
 - `member:read`
 
-Add `member:write` on the destination token only if you pass `--send-invites`. Inviting someone as owner can require `member:admin`.
+If you plan to pass `--send-invites` to invite users to join the new organisation, you will need to create a personal token instead (integration tokens can only be used to invite users with the `member` role), and will have to add the `member:write` scope.
 
 These scopes are separate. `org:write` does not include `project:write` or `member:read`.
 
