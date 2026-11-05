@@ -100,7 +100,7 @@ org-copy apply \
   --dest-token "$DEST_TOKEN"
 ```
 
-Update team admins runs after every invited member has accepted. Invites only add people to teams, so team roles are not copied. This command reads the same `snapshot.json` and sets `teamRole` to `admin` on the destination for members whose org role is `member` and who were admins of a team in the source. Owners, managers, admins, and billing members are not changed. It needs `member:write` on the destination token.
+Update team admins runs after every invited member has accepted. Invites only add people to teams, so team roles are not copied. This command reads the same `snapshot.json` and sets `teamRole` to `admin` on the destination for members whose org role is `member` and who were admins of a team in the source. It needs `member:write` on the destination token.
 
 ```bash
 org-copy update-team-admins \
