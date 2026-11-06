@@ -14,7 +14,7 @@ pip install -e .
 
 ## Tokens
 
-Create one org auth token in the source organization and one in the destination organization. Each token is limited to that organization and region.
+Create one auth token in the source organization and one in the destination organization. We recommend creating an [Internal integration](https://docs.sentry.io/integrations/integration-platform/internal-integration/) in each organisation and use integration tokens.
 
 Source token:
 
@@ -30,7 +30,7 @@ Destination token:
 - `project:write`
 - `member:read`
 
-Add `member:write` on the destination token only if you pass `--send-invites`. Inviting someone as owner can require `member:admin`.
+If you plan to pass `--send-invites` to invite users to join the new organisation, you will need to create a personal token instead (integration tokens can only be used to invite users with the `member` role), and will have to add the `member:write` scope.
 
 These scopes are separate. `org:write` does not include `project:write` or `member:read`.
 
@@ -95,6 +95,15 @@ Apply writes the settings. Run it again to skip objects that already match by sl
 
 ```bash
 org-copy apply \
+  --dest-host https://de.sentry.io \
+  --dest-org DEST_ORG \
+  --dest-token "$DEST_TOKEN"
+```
+
+Update team admins runs after every invited member has accepted. Invites only add people to teams, so team roles are not copied. This command reads the same `snapshot.json` and sets `teamRole` to `admin` on the destination for members whose org role is `member` and who were admins of a team in the source. It needs `member:write` on the destination token.
+
+```bash
+org-copy update-team-admins \
   --dest-host https://de.sentry.io \
   --dest-org DEST_ORG \
   --dest-token "$DEST_TOKEN"

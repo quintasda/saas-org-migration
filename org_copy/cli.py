@@ -12,6 +12,7 @@ from org_copy.client import ApiError, SentryClient
 from org_copy.export import export_snapshot
 from org_copy.files import load_state, read_json, write_json, write_text
 from org_copy.redact import error_text
+from org_copy.team_admins import update_team_admins
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -40,12 +41,21 @@ def main(argv: list[str] | None = None) -> int:
     apply.add_argument("--dsn-map", default="dsn-map.json")
     _copy_flags(apply)
 
+    team_admins = sub.add_parser(
+        "update-team-admins",
+        help="Make org members team admins where they were in the source. Run after invites are accepted.",
+    )
+    _dest_args(team_admins)
+    team_admins.add_argument("--snapshot", default="snapshot.json")
+
     args = parser.parse_args(argv)
     try:
         if args.command == "export":
             return _export(args)
         if args.command == "plan":
             return _plan(args)
+        if args.command == "update-team-admins":
+            return _update_team_admins(args)
         return _apply(args)
     except ApiError as exc:
         print(error_text(exc), file=sys.stderr)
@@ -141,6 +151,19 @@ def _apply(args: argparse.Namespace) -> int:
         print(action)
     for note in report.notes:
         print(f"note: {note}")
+    for failure in report.failures:
+        print(f"fail: {failure['step']}: {failure['detail']}", file=sys.stderr)
+    return 0 if report.ok else 1
+
+
+def _update_team_admins(args: argparse.Namespace) -> int:
+    snapshot = read_json(args.snapshot)
+    org = _require(args.dest_org, "--dest-org / DEST_ORG")
+    token = _require(args.dest_token, "--dest-token / DEST_TOKEN")
+    with SentryClient(args.dest_host, token, org) as client:
+        report = update_team_admins(snapshot, client)
+    for action in report.actions:
+        print(action)
     for failure in report.failures:
         print(f"fail: {failure['step']}: {failure['detail']}", file=sys.stderr)
     return 0 if report.ok else 1
