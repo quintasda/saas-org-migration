@@ -79,15 +79,22 @@ def _copy_flags(parser: argparse.ArgumentParser) -> None:
 
 
 def _org_and_token(prefix: str, label: str) -> tuple[str, str]:
-    """Read {prefix}_ORG and {prefix}_TOKEN, asking for any that are not set."""
-    org = os.environ.get(f"{prefix}_ORG") or _ask(f"{label} org slug: ", f"{prefix}_ORG", secret=False)
-    token = os.environ.get(f"{prefix}_TOKEN") or _ask(f"{label} token: ", f"{prefix}_TOKEN", secret=True)
+    """Ask for {prefix}_ORG and {prefix}_TOKEN on every run.
+
+    Values already in the environment are ignored and removed, so a run never
+    reuses an org or token left over from an earlier session.
+    """
+    stale = [name for name in (f"{prefix}_ORG", f"{prefix}_TOKEN") if os.environ.pop(name, None) is not None]
+    if stale:
+        print(f"Ignoring {' and '.join(stale)} from the environment. Enter them again.", file=sys.stderr)
+    org = _ask(f"{label} org slug: ", f"{prefix}_ORG", secret=False)
+    token = _ask(f"{label} token: ", f"{prefix}_TOKEN", secret=True)
     return org, token
 
 
 def _ask(prompt: str, name: str, *, secret: bool) -> str:
     if not sys.stdin.isatty():
-        raise SystemExit(f"Missing {name}. Set the environment variable or run in a terminal to be asked for it.")
+        raise SystemExit(f"{name} is asked for at startup. Run org-copy in a terminal.")
     value = (getpass.getpass(prompt) if secret else input(prompt)).strip()
     if not value:
         raise SystemExit(f"Missing {name}.")

@@ -36,16 +36,9 @@ These scopes are separate. `org:write` does not include `project:write` or `memb
 
 ## Org slugs and tokens
 
-The script reads both org slugs and both tokens from environment variables. Set them before you run it:
+Each command asks for the org slug and token it needs when it starts. `export` asks for the source org and token. `plan`, `apply`, and `update-team-admins` ask for the destination org and token. Tokens are not echoed.
 
-```bash
-export SOURCE_ORG="..."
-export SOURCE_TOKEN="..."
-export DEST_ORG="..."
-export DEST_TOKEN="..."
-```
-
-If one is not set, the command asks for it when it starts. Tokens are read without echoing them. Without a terminal, such as in CI, a missing value stops the command with an error.
+The command asks on every run, so a run never reuses an org or token from an earlier session. If `SOURCE_ORG`, `SOURCE_TOKEN`, `DEST_ORG`, or `DEST_TOKEN` is set in the environment, the command ignores it, removes it for that run, and asks again. Without a terminal, such as in CI, the command stops with an error.
 
 Do not commit the tokens. They cannot be passed as command-line flags, so they stay out of shell history.
 
@@ -113,7 +106,7 @@ Update team admins runs after every invited member has accepted. Invites only ad
 org-copy update-team-admins --dest-host https://de.sentry.io
 ```
 
-`SOURCE_HOST` defaults to `https://us.sentry.io`. `DEST_HOST` defaults to `https://de.sentry.io`. `export` uses `SOURCE_ORG` and `SOURCE_TOKEN`. The other commands use `DEST_ORG` and `DEST_TOKEN`.
+`SOURCE_HOST` defaults to `https://us.sentry.io`. `DEST_HOST` defaults to `https://de.sentry.io`.
 
 The command exits with status 1 when an export or apply step fails. Other steps still run. Read the checklist for the failures.
 

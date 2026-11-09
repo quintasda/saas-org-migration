@@ -297,16 +297,16 @@ class TeamAdminTests(unittest.TestCase):
             work.cleanup()
 
 
-ORG_ENV = {
-    "SOURCE_ORG": "sana-us",
-    "SOURCE_TOKEN": "us-token",
-    "DEST_ORG": "sana-de",
-    "DEST_TOKEN": "de-token",
+ANSWERS = {
+    "Source org slug: ": "sana-us",
+    "Source token: ": "us-token",
+    "Destination org slug: ": "sana-de",
+    "Destination token: ": "de-token",
 }
 
 
 class CredentialTests(unittest.TestCase):
-    def test_prompts_for_missing_org_and_token(self) -> None:
+    def test_always_asks_for_org_and_token(self) -> None:
         with (
             mock.patch.dict(os.environ, {}, clear=True),
             mock.patch("sys.stdin.isatty", return_value=True),
@@ -317,29 +317,41 @@ class CredentialTests(unittest.TestCase):
         ask.assert_called_once_with("Destination org slug: ")
         ask_secret.assert_called_once_with("Destination token: ")
 
-    def test_env_skips_prompt(self) -> None:
+    def test_ignores_and_clears_values_from_earlier_sessions(self) -> None:
+        err = StringIO()
         with (
-            mock.patch.dict(os.environ, ORG_ENV, clear=True),
-            mock.patch("builtins.input") as ask,
-            mock.patch("getpass.getpass") as ask_secret,
+            mock.patch.dict(os.environ, {"SOURCE_ORG": "old-org", "SOURCE_TOKEN": "old-token"}, clear=True),
+            mock.patch("sys.stdin.isatty", return_value=True),
+            mock.patch("builtins.input", return_value="sana-us"),
+            mock.patch("getpass.getpass", return_value="us-token"),
+            redirect_stderr(err),
         ):
             self.assertEqual(cli._org_and_token("SOURCE", "Source"), ("sana-us", "us-token"))
-        ask.assert_not_called()
-        ask_secret.assert_not_called()
+            self.assertNotIn("SOURCE_ORG", os.environ)
+            self.assertNotIn("SOURCE_TOKEN", os.environ)
+        self.assertIn("Ignoring SOURCE_ORG and SOURCE_TOKEN from the environment", err.getvalue())
+        self.assertNotIn("old-token", err.getvalue())
 
-    def test_missing_value_without_terminal_exits(self) -> None:
+    def test_without_terminal_exits(self) -> None:
         with (
-            mock.patch.dict(os.environ, {"DEST_ORG": "sana-de"}, clear=True),
+            mock.patch.dict(os.environ, {"DEST_ORG": "sana-de", "DEST_TOKEN": "de-token"}, clear=True),
             mock.patch("sys.stdin.isatty", return_value=False),
         ):
-            with self.assertRaisesRegex(SystemExit, "DEST_TOKEN"):
+            with self.assertRaisesRegex(SystemExit, "DEST_ORG"):
                 cli._org_and_token("DEST", "Destination")
 
 
 def _run(args: list[str], stdout: StringIO | None = None) -> int:
     out = stdout or StringIO()
     err = StringIO()
-    with redirect_stdout(out), redirect_stderr(err), mock.patch.dict(os.environ, ORG_ENV):
+    with (
+        redirect_stdout(out),
+        redirect_stderr(err),
+        mock.patch.dict(os.environ),
+        mock.patch("sys.stdin.isatty", return_value=True),
+        mock.patch("builtins.input", side_effect=ANSWERS.__getitem__),
+        mock.patch("getpass.getpass", side_effect=ANSWERS.__getitem__),
+    ):
         return main(args)
 
 
