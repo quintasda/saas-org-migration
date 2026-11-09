@@ -10,9 +10,11 @@ import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
+from unittest import mock
 
 import httpx
 
+from org_copy import cli
 from org_copy.cli import main
 from org_copy.client import SentryClient, next_link
 from tests.fake_sentry import FakeSentry, MemoryOrg, seed
@@ -59,7 +61,7 @@ class CopyTests(unittest.TestCase):
         os.chdir(work.name)
         SentryClient.__init__ = patched  # type: ignore[method-assign]
         try:
-            self.assertEqual(_run(["export", "--source-org", "sana-us", "--source-token", "us-token"]), 0)
+            self.assertEqual(_run(["export"]), 0)
             snapshot = json.loads(Path("snapshot.json").read_text())
             text = Path("snapshot.json").read_text()
             checklist = Path("manual-checklist.md").read_text()
@@ -79,7 +81,7 @@ class CopyTests(unittest.TestCase):
             plan_out = StringIO()
             self.assertEqual(
                 _run(
-                    ["plan", "--dest-org", "sana-de", "--dest-token", "de-token"],
+                    ["plan"],
                     stdout=plan_out,
                 ),
                 0,
@@ -93,10 +95,6 @@ class CopyTests(unittest.TestCase):
                 _run(
                     [
                         "apply",
-                        "--dest-org",
-                        "sana-de",
-                        "--dest-token",
-                        "de-token",
                         "--send-invites",
                         "--hide-environments",
                         "--apply-replay-access",
@@ -114,7 +112,7 @@ class CopyTests(unittest.TestCase):
 
             again = StringIO()
             self.assertEqual(
-                _run(["apply", "--dest-org", "sana-de", "--dest-token", "de-token"], stdout=again),
+                _run(["apply"], stdout=again),
                 0,
             )
             self.assertIn("skip team backend", again.getvalue())
@@ -230,7 +228,7 @@ class TeamAdminTests(unittest.TestCase):
         SentryClient.__init__ = patched  # type: ignore[method-assign]
         try:
             Path("snapshot.json").write_text(json.dumps(snapshot))
-            code = _run(["update-team-admins", "--dest-org", "sana-de", "--dest-token", "de-token"])
+            code = _run(["update-team-admins"])
             self.assertEqual(code, 1)
             puts = [call for call in dest.calls if call[0] == "PUT"]
             self.assertEqual(puts, [("PUT", "/organizations/sana-de/members/1/teams/backend/")])
@@ -243,7 +241,7 @@ class TeamAdminTests(unittest.TestCase):
             dest.members[3]["pending"] = False
             again = StringIO()
             self.assertEqual(
-                _run(["update-team-admins", "--dest-org", "sana-de", "--dest-token", "de-token"], stdout=again),
+                _run(["update-team-admins"], stdout=again),
                 0,
             )
             self.assertIn("skip team role admin for member@example.com on backend", again.getvalue())
@@ -254,10 +252,49 @@ class TeamAdminTests(unittest.TestCase):
             work.cleanup()
 
 
+ORG_ENV = {
+    "SOURCE_ORG": "sana-us",
+    "SOURCE_TOKEN": "us-token",
+    "DEST_ORG": "sana-de",
+    "DEST_TOKEN": "de-token",
+}
+
+
+class CredentialTests(unittest.TestCase):
+    def test_prompts_for_missing_org_and_token(self) -> None:
+        with (
+            mock.patch.dict(os.environ, {}, clear=True),
+            mock.patch("sys.stdin.isatty", return_value=True),
+            mock.patch("builtins.input", return_value=" sana-de ") as ask,
+            mock.patch("getpass.getpass", return_value="de-token") as ask_secret,
+        ):
+            self.assertEqual(cli._org_and_token("DEST", "Destination"), ("sana-de", "de-token"))
+        ask.assert_called_once_with("Destination org slug: ")
+        ask_secret.assert_called_once_with("Destination token: ")
+
+    def test_env_skips_prompt(self) -> None:
+        with (
+            mock.patch.dict(os.environ, ORG_ENV, clear=True),
+            mock.patch("builtins.input") as ask,
+            mock.patch("getpass.getpass") as ask_secret,
+        ):
+            self.assertEqual(cli._org_and_token("SOURCE", "Source"), ("sana-us", "us-token"))
+        ask.assert_not_called()
+        ask_secret.assert_not_called()
+
+    def test_missing_value_without_terminal_exits(self) -> None:
+        with (
+            mock.patch.dict(os.environ, {"DEST_ORG": "sana-de"}, clear=True),
+            mock.patch("sys.stdin.isatty", return_value=False),
+        ):
+            with self.assertRaisesRegex(SystemExit, "DEST_TOKEN"):
+                cli._org_and_token("DEST", "Destination")
+
+
 def _run(args: list[str], stdout: StringIO | None = None) -> int:
     out = stdout or StringIO()
     err = StringIO()
-    with redirect_stdout(out), redirect_stderr(err):
+    with redirect_stdout(out), redirect_stderr(err), mock.patch.dict(os.environ, ORG_ENV):
         return main(args)
 
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import getpass
 import os
 import sys
 
@@ -64,14 +65,10 @@ def main(argv: list[str] | None = None) -> int:
 
 def _source_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--source-host", default=os.environ.get("SOURCE_HOST", "https://us.sentry.io"))
-    parser.add_argument("--source-org", default=os.environ.get("SOURCE_ORG"))
-    parser.add_argument("--source-token", default=os.environ.get("SOURCE_TOKEN"))
 
 
 def _dest_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--dest-host", default=os.environ.get("DEST_HOST", "https://de.sentry.io"))
-    parser.add_argument("--dest-org", default=os.environ.get("DEST_ORG"))
-    parser.add_argument("--dest-token", default=os.environ.get("DEST_TOKEN"))
 
 
 def _copy_flags(parser: argparse.ArgumentParser) -> None:
@@ -81,15 +78,24 @@ def _copy_flags(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--apply-replay-access", action="store_true")
 
 
-def _require(value: str | None, name: str) -> str:
+def _org_and_token(prefix: str, label: str) -> tuple[str, str]:
+    """Read {prefix}_ORG and {prefix}_TOKEN, asking for any that are not set."""
+    org = os.environ.get(f"{prefix}_ORG") or _ask(f"{label} org slug: ", f"{prefix}_ORG", secret=False)
+    token = os.environ.get(f"{prefix}_TOKEN") or _ask(f"{label} token: ", f"{prefix}_TOKEN", secret=True)
+    return org, token
+
+
+def _ask(prompt: str, name: str, *, secret: bool) -> str:
+    if not sys.stdin.isatty():
+        raise SystemExit(f"Missing {name}. Set the environment variable or run in a terminal to be asked for it.")
+    value = (getpass.getpass(prompt) if secret else input(prompt)).strip()
     if not value:
-        raise SystemExit(f"Missing {name}. Pass the flag or set the environment variable.")
+        raise SystemExit(f"Missing {name}.")
     return value
 
 
 def _export(args: argparse.Namespace) -> int:
-    org = _require(args.source_org, "--source-org / SOURCE_ORG")
-    token = _require(args.source_token, "--source-token / SOURCE_TOKEN")
+    org, token = _org_and_token("SOURCE", "Source")
     with SentryClient(args.source_host, token, org) as client:
         snapshot = export_snapshot(client)
     write_json(args.snapshot, snapshot, secret=True)
@@ -114,8 +120,7 @@ def _options(args: argparse.Namespace, dry_run: bool) -> ApplyOptions:
 
 def _plan(args: argparse.Namespace) -> int:
     snapshot = read_json(args.snapshot)
-    org = _require(args.dest_org, "--dest-org / DEST_ORG")
-    token = _require(args.dest_token, "--dest-token / DEST_TOKEN")
+    org, token = _org_and_token("DEST", "Destination")
     with SentryClient(args.dest_host, token, org) as client:
         report = apply_snapshot(snapshot, client, load_state(args.state), args.state, _options(args, True))
     for action in report.actions:
@@ -129,8 +134,7 @@ def _plan(args: argparse.Namespace) -> int:
 
 def _apply(args: argparse.Namespace) -> int:
     snapshot = read_json(args.snapshot)
-    org = _require(args.dest_org, "--dest-org / DEST_ORG")
-    token = _require(args.dest_token, "--dest-token / DEST_TOKEN")
+    org, token = _org_and_token("DEST", "Destination")
     state = load_state(args.state)
     with SentryClient(args.dest_host, token, org) as client:
         report = apply_snapshot(snapshot, client, state, args.state, _options(args, False))
@@ -158,8 +162,7 @@ def _apply(args: argparse.Namespace) -> int:
 
 def _update_team_admins(args: argparse.Namespace) -> int:
     snapshot = read_json(args.snapshot)
-    org = _require(args.dest_org, "--dest-org / DEST_ORG")
-    token = _require(args.dest_token, "--dest-token / DEST_TOKEN")
+    org, token = _org_and_token("DEST", "Destination")
     with SentryClient(args.dest_host, token, org) as client:
         report = update_team_admins(snapshot, client)
     for action in report.actions:

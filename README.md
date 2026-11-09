@@ -34,12 +34,20 @@ If you plan to pass `--send-invites` to invite users to join the new organisatio
 
 These scopes are separate. `org:write` does not include `project:write` or `member:read`.
 
-Do not commit the tokens. Pass them as environment variables:
+## Org slugs and tokens
+
+The script reads both org slugs and both tokens from environment variables. Set them before you run it:
 
 ```bash
+export SOURCE_ORG="..."
 export SOURCE_TOKEN="..."
+export DEST_ORG="..."
 export DEST_TOKEN="..."
 ```
+
+If one is not set, the command asks for it when it starts. Tokens are read without echoing them. Without a terminal, such as in CI, a missing value stops the command with an error.
+
+Do not commit the tokens. They cannot be passed as command-line flags, so they stay out of shell history.
 
 ## What is copied
 
@@ -76,40 +84,28 @@ Switch SDK DSNs last, after alerts in the destination organization are working. 
 Export reads the source organization and writes `snapshot.json` plus a checklist. It does not change either organization.
 
 ```bash
-org-copy export \
-  --source-host https://us.sentry.io \
-  --source-org SOURCE_ORG \
-  --source-token "$SOURCE_TOKEN"
+org-copy export --source-host https://us.sentry.io
 ```
 
 Plan compares that snapshot with the destination and prints the writes it would make. It does not write.
 
 ```bash
-org-copy plan \
-  --dest-host https://de.sentry.io \
-  --dest-org DEST_ORG \
-  --dest-token "$DEST_TOKEN"
+org-copy plan --dest-host https://de.sentry.io
 ```
 
 Apply writes the settings. Run it again to skip objects that already match by slug or name.
 
 ```bash
-org-copy apply \
-  --dest-host https://de.sentry.io \
-  --dest-org DEST_ORG \
-  --dest-token "$DEST_TOKEN"
+org-copy apply --dest-host https://de.sentry.io
 ```
 
 Update team admins runs after every invited member has accepted. Invites only add people to teams, so team roles are not copied. This command reads the same `snapshot.json` and sets `teamRole` to `admin` on the destination for members whose org role is `member` and who were admins of a team in the source. It needs `member:write` on the destination token.
 
 ```bash
-org-copy update-team-admins \
-  --dest-host https://de.sentry.io \
-  --dest-org DEST_ORG \
-  --dest-token "$DEST_TOKEN"
+org-copy update-team-admins --dest-host https://de.sentry.io
 ```
 
-`SOURCE_HOST` defaults to `https://us.sentry.io`. `DEST_HOST` defaults to `https://de.sentry.io`. Org slugs and tokens can also be set with `SOURCE_ORG`, `DEST_ORG`, `SOURCE_TOKEN`, and `DEST_TOKEN`.
+`SOURCE_HOST` defaults to `https://us.sentry.io`. `DEST_HOST` defaults to `https://de.sentry.io`. `export` uses `SOURCE_ORG` and `SOURCE_TOKEN`. The other commands use `DEST_ORG` and `DEST_TOKEN`.
 
 The command exits with status 1 when an export or apply step fails. Other steps still run. Read the checklist for the failures.
 
