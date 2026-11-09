@@ -39,7 +39,6 @@ def render_checklist(
     _section_sso(lines, organization, snapshot.get("authProvider"))
     _section_integrations(lines, snapshot)
     _section_code(lines, snapshot)
-    _section_uptime(lines, snapshot)
     _section_tokens(lines, snapshot)
     _section_apps(lines, snapshot)
     _section_releases(lines, snapshot)
@@ -125,25 +124,6 @@ def _section_code(lines: list[str], snapshot: dict[str, Any]) -> None:
             lines.append(f"- Recreate webhook on `{project.get('slug')}`: {hook.get('url')} events={hook.get('events')}")
     if not found:
         lines.append("- No code owners were listed.")
-    lines.append("")
-
-
-def _section_uptime(lines: list[str], snapshot: dict[str, Any]) -> None:
-    lines.extend(["## Uptime monitors", ""])
-    found = False
-    for project in snapshot.get("projects") or []:
-        for detector in project.get("detectors") or []:
-            if not str(detector.get("type") or "").startswith("uptime"):
-                if detector.get("type") not in (None, "", "metric_issue"):
-                    lines.append(
-                        f"- Unsupported detector `{detector.get('name')}` ({detector.get('type')}) on `{project.get('slug')}`."
-                    )
-                continue
-            found = True
-            url = _uptime_url(detector)
-            lines.append(f"- Recreate uptime monitor `{detector.get('name')}` on `{project.get('slug')}` ({url}).")
-    if not found:
-        lines.append("- No uptime monitors were listed.")
     lines.append("")
 
 
@@ -274,11 +254,3 @@ def _section_forwarders(lines: list[str], snapshot: dict[str, Any]) -> None:
             )
             lines.append(f"- Provider `{item.get('provider')}` enrolled projects: {projects or '(none)'}")
     lines.append("")
-
-
-def _uptime_url(detector: dict[str, Any]) -> str:
-    for source in detector.get("dataSources") or []:
-        query = source.get("queryObj") if isinstance(source, dict) else None
-        if isinstance(query, dict) and query.get("url"):
-            return str(query["url"])
-    return "url not listed"

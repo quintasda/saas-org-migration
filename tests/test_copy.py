@@ -45,6 +45,20 @@ class ClientTests(unittest.TestCase):
         self.assertEqual([row["slug"] for row in rows], ["a", "b"])
         self.assertGreaterEqual(calls["n"], 3)
 
+    def test_rate_limit_retry_keeps_query(self) -> None:
+        urls: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            urls.append(str(request.url))
+            if len(urls) == 1:
+                return httpx.Response(429, headers={"Retry-After": "0"}, json={"detail": "slow"})
+            return httpx.Response(200, json=[])
+
+        with SentryClient("https://us.sentry.io", "token", "o", transport=httpx.MockTransport(handler)) as client:
+            client.get_all("/organizations/o/workflows/", {"project": "-1"})
+        self.assertEqual(len(urls), 2)
+        self.assertTrue(all(url.endswith("?project=-1") for url in urls))
+
 
 class CopyTests(unittest.TestCase):
     def test_export_plan_and_apply_round_trip(self) -> None:
@@ -71,7 +85,6 @@ class CopyTests(unittest.TestCase):
             self.assertIn("super-secret-splunk-token", text)
             self.assertNotIn("super-secret-splunk-token", checklist)
             self.assertIn("saml2", checklist)
-            self.assertIn("Homepage uptime", checklist)
             self.assertIn("CI Upload", checklist)
             self.assertIn("staging", checklist)
             self.assertEqual(stat.S_IMODE(os.stat("snapshot.json").st_mode), 0o600)
@@ -117,8 +130,8 @@ class CopyTests(unittest.TestCase):
             )
             self.assertIn("skip team backend", again.getvalue())
             self.assertEqual(len(dest.teams), 1)
-            self.assertEqual(len(dest.workflows), 1)
-            self.assertEqual(len(dest.projects), 1)
+            self.assertEqual(len(dest.workflows), len(fake.orgs[("us.sentry.io", "sana-us")].workflows))
+            self.assertEqual(len(dest.projects), 2)
             self._assert_destination(fake)
         finally:
             SentryClient.__init__ = original  # type: ignore[method-assign]
@@ -140,11 +153,12 @@ class CopyTests(unittest.TestCase):
         keys = {key["name"]: key for key in project["keys"]}
         self.assertEqual(keys["Production"]["rateLimit"], {"window": 60, "count": 10})
         self.assertTrue(keys["Loader"]["dynamicSdkLoaderOptions"]["hasReplay"])
-        self.assertEqual(len(project["detectors"]), 1)
-        self.assertEqual(project["detectors"][0]["type"], "metric_issue")
-        self.assertIsNone(project["detectors"][0]["dataSources"][0]["environment"])
-        self.assertEqual(project["detectors"][0]["dataSources"][0]["queryType"], 0)
-        self.assertTrue(project["detectors"][0]["owner"].startswith("team:"))
+        metric = [detector for detector in project["detectors"] if detector["type"] == "metric_issue"]
+        self.assertEqual(len(metric), 1)
+        self.assertIsNone(metric[0]["dataSources"][0]["environment"])
+        self.assertEqual(metric[0]["dataSources"][0]["queryType"], 0)
+        self.assertTrue(metric[0]["owner"].startswith("team:"))
+        self._assert_alert_parity(fake)
         workflow = dest.workflows[0]
         actions = workflow["actionFilters"][0]["actions"]
         self.assertTrue(actions)
@@ -175,6 +189,37 @@ class CopyTests(unittest.TestCase):
         self.assertEqual({item["key"] for item in dsn_map}, {"Production", "Loader"})
         self.assertTrue(all(item["dsn"].startswith("https://") for item in dsn_map))
         self.assertTrue(all("ingest.sentry.io" not in item["dsn"] or "de.sentry.io" in item["dsn"] for item in dsn_map))
+
+
+    def _assert_alert_parity(self, fake) -> None:
+        source = fake.orgs[("us.sentry.io", "sana-us")]
+        dest = fake.orgs[("de.sentry.io", "sana-de")]
+        self.assertEqual(len(dest.workflows), len(source.workflows))
+        self.assertEqual(len(dest.monitors), len(source.monitors))
+
+        def detector_id(project: str, kind: str) -> str:
+            found = [item["id"] for item in dest.projects[project]["detectors"] if item["type"] == kind]
+            self.assertEqual(len(found), 1, f"{kind} on {project}")
+            return str(found[0])
+
+        uptime = next(item for item in dest.projects["api"]["detectors"] if item["type"] == "uptime_domain_failure")
+        self.assertEqual(uptime["dataSources"], [{"url": "https://example.com", "method": "GET", "intervalSeconds": 60, "timeoutMs": 5000}])
+        self.assertEqual(uptime["config"], {"mode": 1, "environment": "production", "recoveryThreshold": 1, "downtimeThreshold": 3})
+        linked = sorted((item["name"], [str(value) for value in item["detectorIds"]]) for item in dest.workflows)
+        expected = sorted(
+            [
+                ("Notify on new issue", [detector_id("api", "metric_issue")]),
+                ("Send a notification for high priority issues", [detector_id("api", "issue_stream")]),
+                ("Send a notification for high priority issues", [detector_id("web", "issue_stream")]),
+                ("Nightly missed", [detector_id("api", "monitor_check_in_failure")]),
+                ("Homepage down", [detector_id("api", "uptime_domain_failure")]),
+                ("Any new issue", ["300"]),
+                ("Draft alert", []),
+            ]
+        )
+        self.assertEqual(linked, expected)
+        slack_only = next(item for item in dest.workflows if item["name"] == "Nightly missed")
+        self.assertEqual(slack_only["actionFilters"][0]["actions"], [])
 
 
 class TeamAdminTests(unittest.TestCase):

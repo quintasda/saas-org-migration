@@ -56,9 +56,10 @@ Do not commit the tokens. They cannot be passed as command-line flags, so they s
 - Team membership for people who already belong to the destination organization
 - Projects, project settings, inbound filters, and ownership rules
 - New client keys, with new DSNs. The source DSN secret is not reused.
-- Alerts. Actions that depend on an integration, such as Slack or PagerDuty, are dropped and listed in the checklist.
+- Alerts, connected to the same monitors and projects as in the source, including alerts that have the same name in several projects and alerts that cover all projects. Actions that depend on an integration, such as Slack or PagerDuty, are dropped and listed in the checklist until the integration is set up.
 - Metric monitors
 - Cron monitors
+- Uptime monitors. Auto-detected uptime monitors become manual ones, because the API only creates manual monitors.
 - Custom dashboards. Prebuilt dashboards are skipped.
 - Discover saved queries and recent searches
 - Issue views that belong to the token user
@@ -70,7 +71,6 @@ Do not commit the tokens. They cannot be passed as command-line flags, so they s
 
 - SSO, SAML, and SCIM
 - Integrations, repositories, code mappings, code owners, and service hooks
-- Uptime monitors
 - Organization auth tokens (names and scopes only)
 - Releases, source maps, and debug files
 - Hidden environments, until events create them
