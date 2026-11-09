@@ -36,9 +36,9 @@ These scopes are separate. `org:write` does not include `project:write` or `memb
 
 ## Org slugs and tokens
 
-Each command asks for the org slug and token it needs when it starts. `export` asks for the source org and token. `plan`, `apply`, and `update-team-admins` ask for the destination org and token. Tokens are not echoed.
+You don't need to set any environment variables. When it starts, `org-copy` asks for the details of both orgs. Tokens are not echoed.
 
-The command asks on every run, so a run never reuses an org or token from an earlier session. If `SOURCE_ORG`, `SOURCE_TOKEN`, `DEST_ORG`, or `DEST_TOKEN` is set in the environment, the command ignores it, removes it for that run, and asks again. Without a terminal, such as in CI, the command stops with an error.
+It asks on every run, so a run never reuses an org or token from an earlier session. If `SOURCE_ORG`, `SOURCE_TOKEN`, `DEST_ORG`, or `DEST_TOKEN` is set in the environment, `org-copy` ignores it, removes it for that run, and asks again. It needs a terminal; without one, such as in CI, it stops with an error.
 
 Do not commit the tokens. They cannot be passed as command-line flags, so they stay out of shell history.
 
@@ -82,35 +82,47 @@ After `apply`, `manual-checklist.md` starts with three sections for the review:
 
 ## Run
 
-Export reads the source organization and writes `snapshot.json` plus a checklist. It does not change either organization.
-
 ```bash
-org-copy export --source-host https://us.sentry.io
+org-copy
 ```
 
-Plan compares that snapshot with the destination and prints the writes it would make. It does not write.
+`org-copy` asks for:
+
+1. Source host. Press Enter for `https://us.sentry.io`.
+2. Source org slug and token.
+3. Destination host. Press Enter for `https://de.sentry.io`.
+4. Destination org slug and token.
+
+Then it offers two options:
+
+- **Start migration** copies everything from start to finish. It reads the source, shows the changes it will make to the destination, asks whether to email invites to the source members, and asks you to confirm before it writes anything. When it finishes, open `manual-checklist.md` and start with **Review the destination**.
+- **Plan** changes nothing in either org. It reads the source and prints what Start migration would copy to the destination. Use it first to check the source configuration.
+
+Both options write the local files listed under Output files. Plan does not write `dsn-map.json`.
+
+The command exits with status 1 when a step fails. Other steps still run. Read the checklist for the failures.
+
+### One step at a time
+
+The steps can also be run on their own, for example to use the flags below. Each one asks only for the org it needs.
 
 ```bash
-org-copy plan --dest-host https://de.sentry.io
+org-copy export     # read the source into snapshot.json. Asks for the source org.
+org-copy plan       # show what apply would write. Asks for the destination org.
+org-copy apply      # write the settings. Asks for the destination org.
 ```
 
-Apply writes the settings. Run it again to skip objects that already match by slug or name.
-
-```bash
-org-copy apply --dest-host https://de.sentry.io
-```
+Pass `--source-host` or `--dest-host` to use other regions.
 
 Update team admins runs after every invited member has accepted. Invites only add people to teams, so team roles are not copied. This command reads the same `snapshot.json` and sets `teamRole` to `admin` on the destination for members whose org role is `member` and who were admins of a team in the source. It needs `member:write` on the destination token.
 
 ```bash
-org-copy update-team-admins --dest-host https://de.sentry.io
+org-copy update-team-admins
 ```
 
-`SOURCE_HOST` defaults to `https://us.sentry.io`. `DEST_HOST` defaults to `https://de.sentry.io`.
-
-The command exits with status 1 when an export or apply step fails. Other steps still run. Read the checklist for the failures.
-
 ## Flags
+
+These flags work with `plan` and `apply`. Start migration copies forwarders and asks about invites.
 
 `--send-invites` emails people who are not already members of the destination organization. Without it, existing members are added to the copied teams and nobody new is invited.
 

@@ -305,6 +305,68 @@ ANSWERS = {
 }
 
 
+class GuidedTests(unittest.TestCase):
+    def _guided(self, choice: str, invites: str = "n", write: str = "y") -> tuple[int, MemoryOrg, str]:
+        fake = seed()
+        dest = fake.orgs[("de.sentry.io", "sana-de")]
+        transport = httpx.MockTransport(fake.handle)
+        original = SentryClient.__init__
+
+        def patched(self, host: str, token: str, org: str, **kwargs: object) -> None:
+            kwargs["transport"] = transport
+            original(self, host, token, org, **kwargs)
+
+        answers = {
+            **ANSWERS,
+            "Source host [https://us.sentry.io]: ": "",
+            "Destination host [https://de.sentry.io]: ": "",
+            "Choose 1 or 2: ": choice,
+            "Email invites to the source members now? [y/N]: ": invites,
+            "Write the changes above to sana-de? [y/N]: ": write,
+        }
+        previous = os.getcwd()
+        work = tempfile.TemporaryDirectory()
+        os.chdir(work.name)
+        SentryClient.__init__ = patched  # type: ignore[method-assign]
+        err = StringIO()
+        try:
+            with (
+                redirect_stdout(StringIO()),
+                redirect_stderr(err),
+                mock.patch.dict(os.environ),
+                mock.patch("sys.stdin.isatty", return_value=True),
+                mock.patch("builtins.input", side_effect=answers.__getitem__),
+                mock.patch("getpass.getpass", side_effect=answers.__getitem__),
+            ):
+                code = main([])
+            self.assertTrue(Path("snapshot.json").exists())
+            self.assertEqual(Path("dsn-map.json").exists(), choice == "1" and write == "y")
+        finally:
+            SentryClient.__init__ = original  # type: ignore[method-assign]
+            os.chdir(previous)
+            work.cleanup()
+        return code, dest, err.getvalue()
+
+    def test_plan_writes_nothing(self) -> None:
+        code, dest, err = self._guided("2")
+        self.assertEqual(code, 0)
+        self.assertEqual([call for call in dest.calls if call[0] != "GET"], [])
+        self.assertIn("Nothing was written to sana-de", err)
+
+    def test_start_migration_runs_end_to_end(self) -> None:
+        code, dest, err = self._guided("1")
+        self.assertEqual(code, 0)
+        self.assertEqual(sorted(dest.projects), ["api", "web"])
+        self.assertFalse([call for call in dest.calls if call[0] == "POST" and call[1].endswith("/members/")])
+        self.assertIn("start with Review the destination", err)
+
+    def test_start_migration_can_be_stopped_before_writing(self) -> None:
+        code, dest, err = self._guided("1", write="n")
+        self.assertEqual(code, 1)
+        self.assertEqual([call for call in dest.calls if call[0] != "GET"], [])
+        self.assertIn("Stopped. Nothing was written to sana-de", err)
+
+
 class CredentialTests(unittest.TestCase):
     def test_always_asks_for_org_and_token(self) -> None:
         with (
