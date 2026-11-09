@@ -79,6 +79,14 @@ Do not commit the tokens. They cannot be passed as command-line flags, so they s
 
 Switch SDK DSNs last, after alerts in the destination organization are working. New DSNs are written to `dsn-map.json`.
 
+## Review after apply
+
+After `apply`, `manual-checklist.md` starts with three sections for the review:
+
+- **Review the destination** lists how many teams, projects, members, alerts, monitors, dashboards, saved queries, issue views, and data forwarders the source has, so you can compare them with the destination. It also lists the source's 2FA, data scrubbing, and relay settings, because the API can drop a rejected org setting without a failure.
+- **Finish by hand** lists what needs people to accept their invites first: team admin roles, alert recipients and owners who were not members yet, and ownership rules that could not be saved.
+- **Known gaps to check** lists what the script does not copy exactly, such as alert conditions that name a user or team.
+
 ## Run
 
 Export reads the source organization and writes `snapshot.json` plus a checklist. It does not change either organization.
@@ -126,6 +134,6 @@ These files are gitignored because they contain customer settings and credential
 - `snapshot.json` holds the source export. Data-forwarder secrets stay in this file.
 - `state.json` maps source ids to destination ids so a later apply does not create duplicates.
 - `dsn-map.json` lists the new destination DSNs.
-- `manual-checklist.md` lists work that still has to be done by hand.
+- `manual-checklist.md` lists work that still has to be done by hand and, after apply, what to review in the destination.
 
 All four are written with mode `0600`.

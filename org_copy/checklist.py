@@ -36,6 +36,10 @@ def render_checklist(
         "- Releases, source maps, and debug files have to be uploaded again from CI.",
         "",
     ]
+    if dest_org:
+        _section_review(lines, snapshot)
+        _section_finish(lines, snapshot)
+        _section_gaps(lines)
     _section_sso(lines, organization, snapshot.get("authProvider"))
     _section_integrations(lines, snapshot)
     _section_code(lines, snapshot)
@@ -54,7 +58,7 @@ def render_checklist(
             [
                 "## 2FA",
                 "",
-                "- Source org requires 2FA. Applying org settings turns that requirement on for the destination org.",
+                "- Source org requires 2FA. Apply tries to turn it on for the destination org. Confirm it is on.",
                 "",
             ]
         )
@@ -74,6 +78,122 @@ def render_checklist(
         lines.extend(f"- {action}" for action in actions)
         lines.append("")
     return "\n".join(lines).rstrip() + "\n"
+
+
+REVIEW_ORG_FIELDS = (
+    "require2FA",
+    "dataScrubber",
+    "dataScrubberDefaults",
+    "scrubIPAddresses",
+    "sensitiveFields",
+    "safeFields",
+    "relayPiiConfig",
+    "trustedRelays",
+    "defaultRole",
+)
+
+
+def _section_review(lines: list[str], snapshot: dict[str, Any]) -> None:
+    projects = snapshot.get("projects") or []
+    detector_types = [str(detector.get("type")) for project in projects for detector in project.get("detectors") or []]
+    organization = snapshot.get("organization") or {}
+    counts = (
+        ("Teams", len(snapshot.get("teams") or [])),
+        ("Projects", len(projects)),
+        ("Members, after invites are sent", len(snapshot.get("members") or [])),
+        ("Alerts", len(snapshot.get("workflows") or [])),
+        ("Metric monitors", detector_types.count("metric_issue")),
+        ("Cron monitors", len(snapshot.get("monitors") or [])),
+        ("Uptime monitors", detector_types.count("uptime_domain_failure")),
+        ("Custom dashboards", sum(1 for item in snapshot.get("dashboards") or [] if not item.get("prebuiltId"))),
+        ("Discover saved queries", len(snapshot.get("savedQueries") or [])),
+        ("Issue views of the token user", len((snapshot.get("issueViews") or {}).get("mine") or [])),
+        ("Data forwarders", len(snapshot.get("forwarders") or [])),
+    )
+    lines.extend(
+        [
+            "## Review the destination",
+            "",
+            "- Apply exits with status 1 when a step failed. Each failure is listed under Failures.",
+            "- The source has these. The destination should have the same:",
+        ]
+    )
+    lines.extend(f"  - {label}: {count}" for label, count in counts)
+    lines.extend(
+        [
+            "- Each alert is under the same project or monitor as in the source. "
+            "Alerts with the same name show once per project.",
+            "- Compare these org settings by hand. A rejected org setting can be dropped without a failure:",
+        ]
+    )
+    lines.extend(f"  - `{field}`: {_describe(organization.get(field))}" for field in REVIEW_ORG_FIELDS)
+    lines.extend(
+        [
+            "- For each project, compare settings, inbound filters, ownership rules, and client keys.",
+            "- If apply ran with `--send-invites`, each person under People was invited with that role and those teams.",
+            "",
+        ]
+    )
+
+
+def _section_finish(lines: list[str], snapshot: dict[str, Any]) -> None:
+    lines.extend(["## Finish by hand", ""])
+    admins = [
+        f"{member_email(member)} on {item.get('teamSlug')}"
+        for member in snapshot.get("members") or []
+        if (member.get("orgRole") or "member") == "member"
+        for item in member.get("teamRoles") or []
+        if isinstance(item, dict) and item.get("role") == "admin"
+    ]
+    if admins:
+        lines.append(
+            "- Invites do not copy team roles. After people accept, make them team admins in the UI "
+            "or run `update-team-admins`:"
+        )
+        lines.extend(f"  - {admin}" for admin in admins)
+    lines.extend(
+        [
+            "- Alert recipients and owners who were not members when apply ran were left out. "
+            "If Alert actions to recreate after integrations marks any as "
+            "\"target is not a member of the destination org yet\", add them after those people join.",
+            "- If Failures lists ownership steps, those rules were not saved. "
+            "Enter them again after the people they name join.",
+        ]
+    )
+    others = len((snapshot.get("issueViews") or {}).get("others") or [])
+    if others:
+        lines.append(f"- Issue views that belong to other members: {others}. Each member recreates their own.")
+    lines.append("")
+
+
+def _section_gaps(lines: list[str]) -> None:
+    lines.extend(
+        [
+            "## Known gaps to check",
+            "",
+            "- Alert conditions that name a user or team, such as assigned to, keep the source IDs.",
+            "- Metric monitors lose group by. Compare anomaly detection settings.",
+            "- Changes to the default issue, error, and performance detectors in each project are not copied.",
+            "- Dashboard widgets lose thresholds and descriptions.",
+            "- A destination project that already had the same slug had its settings, filters, and keys replaced.",
+            "- An invite fails when one of its teams was not created. Look for invite steps under Failures.",
+            "- Uptime monitors fail to create when the destination has no uptime seats left.",
+            "- Auto-detected uptime monitors are created as manual monitors.",
+            "- Two metric monitors with the same name in one project are copied as one.",
+            "",
+        ]
+    )
+
+
+def _describe(value: Any) -> str:
+    if isinstance(value, bool):
+        return "on" if value else "off"
+    if isinstance(value, (list, dict)):
+        return f"{len(value)} listed" if value else "none"
+    if value in (None, ""):
+        return "not set"
+    text = str(value)
+    return f"`{text}`" if len(text) <= 40 else "set"
 
 
 def _section_sso(lines: list[str], organization: dict[str, Any], provider: Any) -> None:
@@ -182,7 +302,7 @@ def _section_hidden(lines: list[str], snapshot: dict[str, Any]) -> None:
             joined = ", ".join(names)
             lines.append(
                 f"- `{project.get('slug')}` hides {joined}. "
-                "Re-run apply with `--hide-environments` after those environments exist."
+                "Hide them in project settings after events create them, or re-run apply with `--hide-environments`."
             )
     if not found:
         lines.append("- No hidden environments were listed.")
@@ -206,7 +326,8 @@ def _section_replay(lines: list[str], snapshot: dict[str, Any]) -> None:
         [
             "## Replay access",
             "",
-            "- After these members accept their invites, re-run apply with `--apply-replay-access`:",
+            "- After these members accept their invites, add them to replay access in org settings, "
+            "or re-run apply with `--apply-replay-access`:",
         ]
     )
     lines.extend(f"  - {email}" for email in emails)
