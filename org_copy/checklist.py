@@ -58,7 +58,7 @@ def render_checklist(
             [
                 "## 2FA",
                 "",
-                "- Source org requires 2FA. Apply tries to turn it on for the destination org. Confirm it is on.",
+                "- Source org requires 2FA. Apply can only turn it on with a personal token whose user has 2FA. Confirm it is on in the destination org's security settings.",
                 "",
             ]
         )

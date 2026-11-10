@@ -22,17 +22,23 @@ Source token:
 - `project:read`
 - `member:read`
 - `team:read`
-- `alerts:read`
 
 Destination token:
 
 - `org:write`
 - `project:write`
 - `member:read`
+- `team:write`, to rename a destination team that already exists with the same slug
 
-If you plan to pass `--send-invites` to invite users to join the new organisation, you will need to create a personal token instead (integration tokens can only be used to invite users with the `member` role), and will have to add the `member:write` scope.
+These scopes are separate. `org:write` does not include `project:write`, `member:read`, or `team:write`.
 
-These scopes are separate. `org:write` does not include `project:write` or `member:read`.
+To send invites, the destination token also needs `member:write`. An integration token can only invite people with the `member` role, so invites for admins, managers, and owners fail. Use a personal token from an owner of the destination org to invite them. Owners can invite every role.
+
+Integration tokens can't change these, whatever their scopes. Set them by hand on the destination after `apply`:
+
+- **Require 2FA.** Sentry only turns it on for a token whose user has 2FA, and an integration's user has none.
+- **Default role.** Sentry only changes it with `org:admin` and ignores it otherwise, without an error.
+- **Custom Sentry apps.** An integration token can't list the apps installed on the source, so the checklist can't name them. Check the source's Custom Integrations settings for the list.
 
 ## Org slugs and tokens
 
@@ -114,7 +120,7 @@ org-copy apply      # write the settings. Asks for the destination org.
 
 Pass `--source-host` or `--dest-host` to use other regions.
 
-Update team admins runs after every invited member has accepted. Invites only add people to teams, so team roles are not copied. This command reads the same `snapshot.json` and sets `teamRole` to `admin` on the destination for members whose org role is `member` and who were admins of a team in the source. It needs `member:write` on the destination token.
+Update team admins runs after every invited member has accepted. Invites only add people to teams, so team roles are not copied. This command reads the same `snapshot.json` and sets `teamRole` to `admin` on the destination for members whose org role is `member` and who were admins of a team in the source. The destination token's `org:write` is enough. The destination org needs team roles; without them, Sentry ignores the change.
 
 ```bash
 org-copy update-team-admins
