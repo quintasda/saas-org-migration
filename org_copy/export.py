@@ -9,6 +9,9 @@ from org_copy.redact import error_text, redact
 from org_copy.remap import member_email, replay_emails
 
 LIST_PARAMS = {"per_page": "100"}
+# Without project=-1 these lists only cover the token user's team projects and skip
+# org-level detectors and workflows that are not connected to any monitor.
+ALL_PROJECTS = {"project": "-1", **LIST_PARAMS}
 
 
 def export_snapshot(client: SentryClient) -> dict[str, Any]:
@@ -24,9 +27,10 @@ def export_snapshot(client: SentryClient) -> dict[str, Any]:
     projects = [_export_project(client, org, row, errors) for row in project_rows]
     projects = [project for project in projects if project is not None]
 
-    detectors, detector_error = client.get_optional_list(f"/organizations/{org}/detectors/", LIST_PARAMS)
+    org_detectors: list[dict[str, Any]] = []
+    detectors, detector_error = client.get_optional_list(f"/organizations/{org}/detectors/", ALL_PROJECTS)
     if detector_error is None:
-        _attach_detectors(projects, detectors)
+        org_detectors = _attach_detectors(projects, detectors)
     else:
         _note_optional(errors, "detectors", detector_error)
         for project in projects:
@@ -38,11 +42,11 @@ def export_snapshot(client: SentryClient) -> dict[str, Any]:
                 _note_optional(errors, f"detectors {project['slug']}", error)
             project["detectors"] = listed
 
-    workflows, workflow_error = client.get_optional_list(f"/organizations/{org}/workflows/", LIST_PARAMS)
+    workflows, workflow_error = client.get_optional_list(f"/organizations/{org}/workflows/", ALL_PROJECTS)
     _note_optional(errors, "workflows", workflow_error)
     alert_rules, alert_error = client.get_optional_list(f"/organizations/{org}/alert-rules/", LIST_PARAMS)
     _note_optional(errors, "alert-rules", alert_error)
-    monitors, monitor_error = client.get_optional_list(f"/organizations/{org}/monitors/", LIST_PARAMS)
+    monitors, monitor_error = client.get_optional_list(f"/organizations/{org}/monitors/", ALL_PROJECTS)
     _note_optional(errors, "monitors", monitor_error)
     dashboards = _export_dashboards(client, org, errors)
     saved_queries, query_error = client.get_optional_list(
@@ -84,6 +88,7 @@ def export_snapshot(client: SentryClient) -> dict[str, Any]:
         "members": [_public_member(member) for member in members],
         "replayAccessEmails": replay_emails(organization, members),
         "projects": projects,
+        "orgDetectors": org_detectors,
         "workflows": workflows,
         "alertRules": alert_rules,
         "monitors": monitors,
@@ -227,12 +232,18 @@ def _default_team_role(member: dict[str, Any]) -> str | None:
     return None
 
 
-def _attach_detectors(projects: list[dict[str, Any]], detectors: list[dict[str, Any]]) -> None:
+def _attach_detectors(projects: list[dict[str, Any]], detectors: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Attach detectors to their projects and return the org-level ones, such as the all-projects detector."""
     by_id = {project["id"]: project for project in projects if project.get("id")}
+    org_level = []
     for detector in detectors:
-        project = by_id.get(str(detector.get("projectId") or ""))
+        if not detector.get("projectId"):
+            org_level.append(detector)
+            continue
+        project = by_id.get(str(detector["projectId"]))
         if project is not None:
             project["detectors"].append(detector)
+    return org_level
 
 
 def _required_list(

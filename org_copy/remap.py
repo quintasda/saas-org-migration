@@ -416,6 +416,50 @@ def detector_create_body(detector: dict[str, Any], owner: str | None) -> dict[st
     return body
 
 
+UPTIME_SOURCE_KEYS = (
+    "url",
+    "method",
+    "headers",
+    "body",
+    "intervalSeconds",
+    "timeoutMs",
+    "traceSampling",
+    "responseCaptureEnabled",
+    "assertion",
+)
+
+
+def uptime_detector_body(detector: dict[str, Any], owner: str | None) -> dict[str, Any]:
+    sources = []
+    for source in detector.get("dataSources") or []:
+        query = source.get("queryObj") if isinstance(source, dict) else None
+        if isinstance(query, dict):
+            sources.append({key: query[key] for key in UPTIME_SOURCE_KEYS if query.get(key) is not None})
+    config = detector.get("config") if isinstance(detector.get("config"), dict) else {}
+    # Only manual mode can be set through the API, so auto-detected monitors become manual.
+    body_config: dict[str, Any] = {"mode": 1}
+    for camel, snake in (
+        ("environment", "environment"),
+        ("recoveryThreshold", "recovery_threshold"),
+        ("downtimeThreshold", "downtime_threshold"),
+    ):
+        value = config.get(camel, config.get(snake))
+        if value is not None:
+            body_config[camel] = value
+    body: dict[str, Any] = {
+        "name": detector.get("name"),
+        "type": "uptime_domain_failure",
+        "description": detector.get("description") or "",
+        "enabled": detector.get("enabled", True),
+        "config": body_config,
+        "dataSources": sources[:1],
+        "workflowIds": [],
+    }
+    if owner:
+        body["owner"] = owner
+    return body
+
+
 def workflow_create_body(
     workflow: dict[str, Any],
     detector_map: dict[str, str],

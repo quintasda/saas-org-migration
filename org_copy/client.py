@@ -100,7 +100,6 @@ class SentryClient:
             if response.status_code not in _RETRY_STATUSES or attempt == _MAX_ATTEMPTS - 1:
                 break
             time.sleep(_retry_delay(response, attempt))
-            params = None
         assert last is not None
         if last.status_code >= 400:
             raise ApiError(method, path, last.status_code, _error_body(last))

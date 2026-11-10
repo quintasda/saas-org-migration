@@ -33,6 +33,7 @@ class MemoryOrg:
         self.workflows: list[dict[str, Any]] = []
         self.alert_rules: list[dict[str, Any]] = []
         self.monitors: list[dict[str, Any]] = []
+        self.org_detectors: list[dict[str, Any]] = []
         self.dashboards: list[dict[str, Any]] = []
         self.queries: list[dict[str, Any]] = []
         self.recent_searches: list[dict[str, Any]] = []
@@ -53,8 +54,9 @@ class MemoryOrg:
     def organization(self) -> dict[str, Any]:
         return {"id": self.id, "slug": self.slug, "name": self.slug, **self.fields}
 
-    def detectors(self) -> list[dict[str, Any]]:
-        rows: list[dict[str, Any]] = []
+    def detectors(self, all_projects: bool) -> list[dict[str, Any]]:
+        # Like Sentry, org-level detectors are only listed with project=-1.
+        rows: list[dict[str, Any]] = list(self.org_detectors) if all_projects else []
         for project in self.projects.values():
             rows.extend(project["detectors"])
         return rows
@@ -101,12 +103,18 @@ class FakeSentry:
             return self._members(org, method, body)
         if path == f"/organizations/{slug}/projects/":
             return _ok(list(org.projects.values()))
+        all_projects = params.get("project") == "-1"
         if path == f"/organizations/{slug}/detectors/":
-            return _ok(org.detectors())
+            return _ok(org.detectors(all_projects))
+        if path == f"/organizations/{slug}/workflows/" and method == "GET":
+            # Like Sentry, workflows without detectors are only listed with project=-1.
+            return _ok([item for item in org.workflows if all_projects or item.get("detectorIds")])
         if path == f"/organizations/{slug}/workflows/":
             return self._collection(org.workflows, method, body)
         if path == f"/organizations/{slug}/alert-rules/":
             return self._collection(org.alert_rules, method, body)
+        if path == f"/organizations/{slug}/monitors/" and method == "POST":
+            return self._create_monitor(org, body)
         if path == f"/organizations/{slug}/monitors/":
             return self._collection(org.monitors, method, body)
         if path == f"/organizations/{slug}/dashboards/":
@@ -312,11 +320,29 @@ class FakeSentry:
             "rules": [],
             "codeowners": [],
             "hooks": [],
-            "detectors": [],
+            "detectors": [
+                {"id": org.next_id(), "projectId": project_id, "name": "Error", "type": "error"},
+                {"id": org.next_id(), "projectId": project_id, "name": "Issue stream", "type": "issue_stream"},
+            ],
             "options": {},
         }
         org.projects[project["slug"]] = project
         return _ok(project, 201)
+
+    def _create_monitor(self, org: MemoryOrg, body: dict[str, Any]) -> httpx.Response:
+        created = {"id": org.next_id(), **body}
+        org.monitors.append(created)
+        project = org.projects[body["project"]]
+        project["detectors"].append(
+            {
+                "id": org.next_id(),
+                "projectId": project["id"],
+                "name": body["name"],
+                "type": "monitor_check_in_failure",
+                "dataSources": [{"queryObj": {"slug": body["slug"]}}],
+            }
+        )
+        return _ok(created, 201)
 
     def _project(self, org: MemoryOrg, slug: str, method: str, body: dict[str, Any]) -> httpx.Response:
         project = org.projects[slug]
@@ -578,7 +604,18 @@ def seed() -> FakeSentry:
                 "projectId": "10",
                 "name": "Homepage uptime",
                 "type": "uptime_domain_failure",
-                "dataSources": [{"queryObj": {"url": "https://example.com"}}],
+                "dataSources": [
+                    {"queryObj": {"url": "https://example.com", "method": "GET", "intervalSeconds": 60, "timeoutMs": 5000}}
+                ],
+                "config": {"environment": "production", "recovery_threshold": 1, "downtime_threshold": 3, "mode": 3},
+            },
+            {"id": "d3", "projectId": "10", "name": "Issue stream", "type": "issue_stream"},
+            {
+                "id": "d5",
+                "projectId": "10",
+                "name": "Nightly",
+                "type": "monitor_check_in_failure",
+                "dataSources": [{"queryObj": {"slug": "nightly"}}],
             },
         ],
     }
@@ -726,7 +763,10 @@ def seed() -> FakeSentry:
     source.apps.append({"app": {"slug": "my-app"}})
     source.tokens.append({"id": "t1", "name": "CI Upload", "scopes": ["project:releases"], "token": "org-token-secret-value"})
 
+    _seed_alert_shapes(source)
+
     dest = fake.add("de.sentry.io", MemoryOrg("sana-de", "2"))
+    dest.org_detectors.append({"id": "300", "projectId": None, "name": "All projects", "type": "issue_stream"})
     dest.members.append(
         {
             "id": "m-dest-owner",
@@ -740,3 +780,51 @@ def seed() -> FakeSentry:
         }
     )
     return fake
+
+
+def _seed_alert_shapes(source: MemoryOrg) -> None:
+    """Alerts the way Sentry stores them: same-named per-project alerts, cron, uptime, all-projects, detached."""
+    source.projects["web"] = {
+        "id": "11",
+        "slug": "web",
+        "name": "Web",
+        "platform": "javascript",
+        "team": {"id": "1", "slug": "backend"},
+        "teams": [{"id": "1", "slug": "backend"}],
+        "options": {},
+        "filters": [],
+        "ownership": None,
+        "keys": [],
+        "environments": [],
+        "rules": [],
+        "codeowners": [],
+        "hooks": [],
+        "detectors": [{"id": "d6", "projectId": "11", "name": "Issue stream", "type": "issue_stream"}],
+    }
+    source.org_detectors.append({"id": "d0", "projectId": None, "name": "All projects", "type": "issue_stream"})
+    slack_only = [
+        {
+            "logicType": "any-short",
+            "conditions": [],
+            "actions": [{"type": "slack", "integrationId": "9", "config": {"targetType": "specific"}}],
+        }
+    ]
+    for workflow_id, name, detector_ids in (
+        ("w2", "Send a notification for high priority issues", ["d3"]),
+        ("w3", "Send a notification for high priority issues", ["d6"]),
+        ("w4", "Nightly missed", ["d5"]),
+        ("w5", "Homepage down", ["d2"]),
+        ("w6", "Any new issue", ["d0"]),
+        ("w7", "Draft alert", []),
+    ):
+        source.workflows.append(
+            {
+                "id": workflow_id,
+                "name": name,
+                "enabled": True,
+                "config": {"frequency": 30},
+                "detectorIds": detector_ids,
+                "triggers": {"logicType": "any-short", "conditions": []},
+                "actionFilters": slack_only,
+            }
+        )

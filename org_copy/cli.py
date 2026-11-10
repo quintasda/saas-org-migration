@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import getpass
 import os
 import sys
 
@@ -15,12 +16,19 @@ from org_copy.redact import error_text
 from org_copy.team_admins import update_team_admins
 
 
+SOURCE_HOST = "https://us.sentry.io"
+DEST_HOST = "https://de.sentry.io"
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="org-copy",
-        description="Copy Sentry organization settings from one region to another.",
+        description=(
+            "Copy Sentry organization settings from one region to another. "
+            "Run without a command to be guided through the whole migration."
+        ),
     )
-    sub = parser.add_subparsers(dest="command", required=True)
+    sub = parser.add_subparsers(dest="command")
 
     export = sub.add_parser("export", help="Read the source org into snapshot.json")
     _source_args(export)
@@ -50,28 +58,27 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
     try:
+        if args.command is None:
+            return _guided()
         if args.command == "export":
-            return _export(args)
+            return _export(args, *_org_and_token("SOURCE", "Source"))
+        org, token = _org_and_token("DEST", "Destination")
         if args.command == "plan":
-            return _plan(args)
+            return _plan(args, org, token)
         if args.command == "update-team-admins":
-            return _update_team_admins(args)
-        return _apply(args)
+            return _update_team_admins(args, org, token)
+        return _apply(args, org, token)
     except ApiError as exc:
         print(error_text(exc), file=sys.stderr)
         return 1
 
 
 def _source_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--source-host", default=os.environ.get("SOURCE_HOST", "https://us.sentry.io"))
-    parser.add_argument("--source-org", default=os.environ.get("SOURCE_ORG"))
-    parser.add_argument("--source-token", default=os.environ.get("SOURCE_TOKEN"))
+    parser.add_argument("--source-host", default=SOURCE_HOST)
 
 
 def _dest_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--dest-host", default=os.environ.get("DEST_HOST", "https://de.sentry.io"))
-    parser.add_argument("--dest-org", default=os.environ.get("DEST_ORG"))
-    parser.add_argument("--dest-token", default=os.environ.get("DEST_TOKEN"))
+    parser.add_argument("--dest-host", default=DEST_HOST)
 
 
 def _copy_flags(parser: argparse.ArgumentParser) -> None:
@@ -81,15 +88,88 @@ def _copy_flags(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--apply-replay-access", action="store_true")
 
 
-def _require(value: str | None, name: str) -> str:
+def _guided() -> int:
+    """Ask for both orgs, then plan or run the whole migration."""
+    if not sys.stdin.isatty():
+        raise SystemExit("org-copy asks for both orgs at startup. Run it in a terminal.")
+    source_host = _ask_host("Source", SOURCE_HOST)
+    source_org, source_token = _org_and_token("SOURCE", "Source")
+    dest_host = _ask_host("Destination", DEST_HOST)
+    dest_org, dest_token = _org_and_token("DEST", "Destination")
+    print(
+        "\nWhat do you want to do?\n"
+        f"  1. Start migration: copy {source_org} to {dest_org} from start to finish.\n"
+        f"  2. Plan: show what would be copied. Nothing is written to {dest_org}.",
+        file=sys.stderr,
+    )
+    choice = ""
+    while choice not in ("1", "2"):
+        choice = input("Choose 1 or 2: ").strip()
+    args = argparse.Namespace(
+        source_host=source_host,
+        dest_host=dest_host,
+        snapshot="snapshot.json",
+        checklist="manual-checklist.md",
+        state="state.json",
+        dsn_map="dsn-map.json",
+        send_invites=False,
+        include_forwarders=True,
+        hide_environments=False,
+        apply_replay_access=False,
+    )
+    print(f"\nReading {source_org}...", file=sys.stderr)
+    if _export(args, source_org, source_token) != 0 and not _confirm("Some settings could not be read. Continue?"):
+        return 1
+    print(f"\nComparing with {dest_org}. Nothing is written yet.", file=sys.stderr)
+    planned = _plan(args, dest_org, dest_token)
+    if choice == "2":
+        print(f"\nPlan only. Nothing was written to {dest_org}. Details are in {args.checklist}.", file=sys.stderr)
+        return planned
+    args.send_invites = _confirm("Email invites to the source members now?")
+    if not _confirm(f"Write the changes above to {dest_org}?"):
+        print(f"Stopped. Nothing was written to {dest_org}.", file=sys.stderr)
+        return 1
+    code = _apply(args, dest_org, dest_token)
+    print(
+        f"\nDone. Open {args.checklist} and start with Review the destination. "
+        f"New DSNs are in {args.dsn_map}.",
+        file=sys.stderr,
+    )
+    return code
+
+
+def _ask_host(label: str, default: str) -> str:
+    return input(f"{label} host [{default}]: ").strip() or default
+
+
+def _confirm(question: str) -> bool:
+    return input(f"{question} [y/N]: ").strip().lower() in ("y", "yes")
+
+
+def _org_and_token(prefix: str, label: str) -> tuple[str, str]:
+    """Ask for {prefix}_ORG and {prefix}_TOKEN on every run.
+
+    Values already in the environment are ignored and removed, so a run never
+    reuses an org or token left over from an earlier session.
+    """
+    stale = [name for name in (f"{prefix}_ORG", f"{prefix}_TOKEN") if os.environ.pop(name, None) is not None]
+    if stale:
+        print(f"Ignoring {' and '.join(stale)} from the environment. Enter them again.", file=sys.stderr)
+    org = _ask(f"{label} org slug: ", f"{prefix}_ORG", secret=False)
+    token = _ask(f"{label} token: ", f"{prefix}_TOKEN", secret=True)
+    return org, token
+
+
+def _ask(prompt: str, name: str, *, secret: bool) -> str:
+    if not sys.stdin.isatty():
+        raise SystemExit(f"{name} is asked for at startup. Run org-copy in a terminal.")
+    value = (getpass.getpass(prompt) if secret else input(prompt)).strip()
     if not value:
-        raise SystemExit(f"Missing {name}. Pass the flag or set the environment variable.")
+        raise SystemExit(f"Missing {name}.")
     return value
 
 
-def _export(args: argparse.Namespace) -> int:
-    org = _require(args.source_org, "--source-org / SOURCE_ORG")
-    token = _require(args.source_token, "--source-token / SOURCE_TOKEN")
+def _export(args: argparse.Namespace, org: str, token: str) -> int:
     with SentryClient(args.source_host, token, org) as client:
         snapshot = export_snapshot(client)
     write_json(args.snapshot, snapshot, secret=True)
@@ -112,10 +192,8 @@ def _options(args: argparse.Namespace, dry_run: bool) -> ApplyOptions:
     )
 
 
-def _plan(args: argparse.Namespace) -> int:
+def _plan(args: argparse.Namespace, org: str, token: str) -> int:
     snapshot = read_json(args.snapshot)
-    org = _require(args.dest_org, "--dest-org / DEST_ORG")
-    token = _require(args.dest_token, "--dest-token / DEST_TOKEN")
     with SentryClient(args.dest_host, token, org) as client:
         report = apply_snapshot(snapshot, client, load_state(args.state), args.state, _options(args, True))
     for action in report.actions:
@@ -127,10 +205,8 @@ def _plan(args: argparse.Namespace) -> int:
     return 0 if report.ok else 1
 
 
-def _apply(args: argparse.Namespace) -> int:
+def _apply(args: argparse.Namespace, org: str, token: str) -> int:
     snapshot = read_json(args.snapshot)
-    org = _require(args.dest_org, "--dest-org / DEST_ORG")
-    token = _require(args.dest_token, "--dest-token / DEST_TOKEN")
     state = load_state(args.state)
     with SentryClient(args.dest_host, token, org) as client:
         report = apply_snapshot(snapshot, client, state, args.state, _options(args, False))
@@ -156,10 +232,8 @@ def _apply(args: argparse.Namespace) -> int:
     return 0 if report.ok else 1
 
 
-def _update_team_admins(args: argparse.Namespace) -> int:
+def _update_team_admins(args: argparse.Namespace, org: str, token: str) -> int:
     snapshot = read_json(args.snapshot)
-    org = _require(args.dest_org, "--dest-org / DEST_ORG")
-    token = _require(args.dest_token, "--dest-token / DEST_TOKEN")
     with SentryClient(args.dest_host, token, org) as client:
         report = update_team_admins(snapshot, client)
     for action in report.actions:

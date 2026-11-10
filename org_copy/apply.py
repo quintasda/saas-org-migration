@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from org_copy.client import ApiError, SentryClient
+from org_copy.export import ALL_PROJECTS
 from org_copy.files import write_json
 from org_copy.redact import error_text
 from org_copy.remap import (
@@ -24,10 +25,16 @@ from org_copy.remap import (
     public_key_settings,
     remap_owner,
     saved_query_body,
+    uptime_detector_body,
     workflow_create_body,
 )
 
 LIST_PARAMS = {"per_page": "100"}
+CREATED_DETECTOR_TYPES = {
+    "metric_issue": detector_create_body,
+    "uptime_domain_failure": uptime_detector_body,
+}
+CRON_DETECTOR_TYPE = "monitor_check_in_failure"
 
 
 @dataclass
@@ -111,12 +118,14 @@ def apply_snapshot(
     _apply_existing_member_teams(snapshot, sink, dest, report)
     _apply_projects(snapshot, client, sink, dest, state, state_path, options, report, team_map, project_map)
     _apply_forwarders(snapshot, sink, dest, state, state_path, options, project_map, report)
+    _apply_monitors(snapshot, sink, dest, state, state_path, options, team_map, user_map, project_map, report)
+    # New projects and cron monitors get their own detectors. Alerts connect to those.
+    dest.load_detectors(client, report)
     _apply_detectors(snapshot, sink, dest, state, state_path, options, team_map, user_map, project_map, detector_map, report)
     _apply_workflows(snapshot, sink, dest, state, state_path, options, team_map, user_map, detector_map, report)
     names = {workflow.get("name") for workflow in snapshot.get("workflows") or []}
     _apply_legacy_rules(snapshot, sink, dest, state, state_path, options, team_map, user_map, names, report)
     _apply_metric_rules(snapshot, sink, dest, state, state_path, options, team_map, user_map, names, report)
-    _apply_monitors(snapshot, sink, dest, state, state_path, options, team_map, user_map, project_map, report)
     _apply_dashboards(snapshot, sink, dest, state, state_path, options, team_map, project_map, report)
     _apply_queries(snapshot, sink, dest, state, state_path, options, project_map, report)
     _apply_recent_searches(snapshot, sink, dest, report)
@@ -139,7 +148,7 @@ class _DestIndex:
         self.projects_by_slug: dict[str, dict[str, Any]] = {}
         self.members: list[dict[str, Any]] = []
         self.members_by_email: dict[str, dict[str, Any]] = {}
-        self.workflows_by_name: dict[str, dict[str, Any]] = {}
+        self.workflow_keys: set[tuple[str, tuple[str, ...]]] = set()
         self.monitors_by_slug: dict[str, dict[str, Any]] = {}
         self.dashboards_by_title: dict[str, dict[str, Any]] = {}
         self.queries_by_name: dict[str, dict[str, Any]] = {}
@@ -147,6 +156,7 @@ class _DestIndex:
         self.views_by_name: dict[str, dict[str, Any]] = {}
         self.forwarders_by_provider: dict[str, dict[str, Any]] = {}
         self.alert_rules_by_name: dict[str, dict[str, Any]] = {}
+        self.detectors: list[dict[str, Any]] = []
         self.detectors_by_key: dict[str, dict[str, Any]] = {}
         self.rules_by_key: dict[str, dict[str, Any]] = {}
 
@@ -169,8 +179,15 @@ class _DestIndex:
             report.failures.append({"step": "list destination members", "detail": error_text(error)})
         index.members = members
         index.members_by_email = {member_email(member): member for member in members if member_email(member)}
-        index.workflows_by_name = _by(client, f"/organizations/{client.org}/workflows/", "name", report, "workflows")
-        index.monitors_by_slug = _by(client, f"/organizations/{client.org}/monitors/", "slug", report, "monitors")
+        workflows, workflow_error = client.get_optional_list(f"/organizations/{client.org}/workflows/", ALL_PROJECTS)
+        if workflow_error and workflow_error.status != 404:
+            report.failures.append({"step": "list destination workflows", "detail": error_text(workflow_error)})
+        index.workflow_keys = {
+            _workflow_key(item["name"], item.get("detectorIds") or []) for item in workflows if item.get("name")
+        }
+        index.monitors_by_slug = _by(
+            client, f"/organizations/{client.org}/monitors/", "slug", report, "monitors", ALL_PROJECTS
+        )
         index.dashboards_by_title = _by(client, f"/organizations/{client.org}/dashboards/", "title", report, "dashboards")
         index.queries_by_name = _by(client, f"/organizations/{client.org}/discover/saved/", "name", report, "saved queries")
         recent, recent_error = client.get_optional_list(f"/organizations/{client.org}/recent-searches/", LIST_PARAMS)
@@ -189,14 +206,6 @@ class _DestIndex:
             report.failures.append({"step": "list destination forwarders", "detail": error_text(forward_error)})
         index.forwarders_by_provider = {item.get("provider"): item for item in forwarders if item.get("provider")}
         index.alert_rules_by_name = _by(client, f"/organizations/{client.org}/alert-rules/", "name", report, "metric alerts")
-        detectors, detector_error = client.get_optional_list(f"/organizations/{client.org}/detectors/", LIST_PARAMS)
-        if detector_error and detector_error.status != 404:
-            report.failures.append({"step": "list destination detectors", "detail": error_text(detector_error)})
-        for detector in detectors:
-            project_id = str(detector.get("projectId") or "")
-            name = detector.get("name")
-            if project_id and name:
-                index.detectors_by_key[f"{project_id}:{name}"] = detector
         for project in index.projects_by_slug.values():
             slug = project.get("slug")
             rules, rule_error = client.get_optional_list(f"/projects/{client.org}/{slug}/rules/")
@@ -207,11 +216,33 @@ class _DestIndex:
                     index.rules_by_key[f"{slug}:{rule['name']}"] = rule
         return index
 
+    def load_detectors(self, client: SentryClient, report: ApplyReport) -> None:
+        detectors, error = client.get_optional_list(f"/organizations/{client.org}/detectors/", ALL_PROJECTS)
+        if error and error.status != 404:
+            report.failures.append({"step": "list destination detectors", "detail": error_text(error)})
+        self.detectors = detectors
+        self.detectors_by_key = {}
+        for detector in detectors:
+            project_id = str(detector.get("projectId") or "")
+            name = detector.get("name")
+            if project_id and name:
+                self.detectors_by_key[f"{project_id}:{name}"] = detector
+
+
+def _workflow_key(name: str, detector_ids: list[Any]) -> tuple[str, tuple[str, ...]]:
+    """Alerts share names across projects, so an alert is the same only when it watches the same monitors."""
+    return name, tuple(sorted(str(detector_id) for detector_id in detector_ids))
+
 
 def _by(
-    client: SentryClient, path: str, key: str, report: ApplyReport, label: str
+    client: SentryClient,
+    path: str,
+    key: str,
+    report: ApplyReport,
+    label: str,
+    params: dict[str, str] = LIST_PARAMS,
 ) -> dict[str, dict[str, Any]]:
-    rows, error = client.get_optional_list(path, LIST_PARAMS)
+    rows, error = client.get_optional_list(path, params)
     if error and error.status != 404:
         report.failures.append({"step": f"list destination {label}", "detail": error_text(error)})
     return {row[key]: row for row in rows if isinstance(row, dict) and row.get(key)}
@@ -627,7 +658,39 @@ def _iter_detectors(snapshot: dict[str, Any]) -> list[tuple[str, dict[str, Any]]
                 continue
             seen.add(ident)
             found.append((project.get("slug"), detector))
+    found.extend(("the organization", detector) for detector in snapshot.get("orgDetectors") or [])
     return found
+
+
+def _cron_slug(detector: dict[str, Any]) -> str | None:
+    for source in detector.get("dataSources") or []:
+        query = source.get("queryObj") if isinstance(source, dict) else None
+        if isinstance(query, dict) and query.get("slug"):
+            return str(query["slug"])
+    return None
+
+
+def _existing_dest_detector(
+    detector: dict[str, Any], dest: _DestIndex, project_map: dict[str, str]
+) -> dict[str, Any] | None:
+    """Find the destination detector that Sentry created for us: project defaults, cron monitors, all-projects."""
+    kind = detector.get("type")
+    candidates = [item for item in dest.detectors if item.get("type") == kind]
+    if kind == CRON_DETECTOR_TYPE:
+        slug = _cron_slug(detector)
+        return next((item for item in candidates if slug and _cron_slug(item) == slug), None)
+    if not detector.get("projectId"):
+        return next((item for item in candidates if not item.get("projectId")), None)
+    dest_project = project_map.get(str(detector["projectId"]))
+    return next((item for item in candidates if dest_project and str(item.get("projectId")) == dest_project), None)
+
+
+def _planned(detector: dict[str, Any], dest: _DestIndex, project_map: dict[str, str]) -> bool:
+    """In a plan, projects and cron monitors are not created, so their detectors cannot be found yet."""
+    if detector.get("type") == CRON_DETECTOR_TYPE:
+        planned = dest.monitors_by_slug.get(_cron_slug(detector) or "")
+        return bool(planned) and str(planned.get("id")).startswith("plan-")
+    return str(project_map.get(str(detector.get("projectId") or ""), "")).startswith("plan-")
 
 
 def _apply_detectors(
@@ -647,32 +710,39 @@ def _apply_detectors(
     for slug, detector in _iter_detectors(snapshot):
         name = detector.get("name") or "monitor"
         kind = str(detector.get("type") or "")
-        if kind.startswith("uptime"):
-            report.notes.append(f"Uptime monitor {name} on {slug} must be recreated by hand.")
-            continue
-        if kind != "metric_issue":
-            report.notes.append(f"Detector {name} ({kind}) on {slug} is not created by this script.")
+        source_id = str(detector.get("id"))
+        build_body = CREATED_DETECTOR_TYPES.get(kind)
+        if build_body is None:
+            existing = _existing_dest_detector(detector, dest, project_map)
+            if existing:
+                detector_map[source_id] = str(existing.get("id"))
+            elif sink.dry_run and _planned(detector, dest, project_map):
+                detector_map[source_id] = f"{kind} on {slug}"
+            else:
+                report.failures.append(
+                    {
+                        "step": f"detector {name} ({kind}) on {slug}",
+                        "detail": "no matching destination detector, so alerts connected to it were not copied",
+                    }
+                )
             continue
         dest_project = project_map.get(str(detector.get("projectId") or ""))
-        existing = None
-        if dest_project:
-            existing = dest.detectors_by_key.get(f"{dest_project}:{name}")
+        existing = dest.detectors_by_key.get(f"{dest_project}:{name}") if dest_project else None
         if existing:
             sink.skip(f"detector {name} on {slug}")
-            detector_map[str(detector.get("id"))] = str(existing.get("id"))
+            detector_map[source_id] = str(existing.get("id"))
             continue
         owner = remap_owner(detector.get("owner"), team_map, user_map)
-        body = detector_create_body(detector, owner)
         try:
             created = sink.post(
                 f"/organizations/{org}/projects/{slug}/detectors/",
-                body,
+                build_body(detector, owner),
                 f"detector {name} on {slug}",
             )
         except ApiError as exc:
             _fail(report, f"detector {name} on {slug}", exc)
             continue
-        detector_map[str(detector.get("id"))] = str(created.get("id"))
+        detector_map[source_id] = str(created.get("id"))
         _remember(state, "detectors", detector.get("id"), created.get("id"), state_path, options.dry_run)
 
 
@@ -693,20 +763,30 @@ def _apply_workflows(
         name = workflow.get("name")
         if not name:
             continue
-        existing = dest.workflows_by_name.get(name)
-        if existing:
-            sink.skip(f"workflow {name}")
+        unmapped = [str(item) for item in workflow.get("detectorIds") or [] if str(item) not in detector_map]
+        if unmapped:
+            report.failures.append(
+                {
+                    "step": f"workflow {name}",
+                    "detail": f"connected detectors {', '.join(unmapped)} were not copied, so the alert was not created",
+                }
+            )
             continue
         owner = remap_owner(workflow.get("owner"), team_map, user_map)
         body, dropped = workflow_create_body(workflow, detector_map, owner, user_map, team_map)
+        # List integration actions on every run so the checklist keeps them until they are set up by hand.
         for action in dropped:
             report.dropped_actions.append({"rule": name, "action": action})
+        key = _workflow_key(name, body["detectorIds"])
+        if key in dest.workflow_keys:
+            sink.skip(f"workflow {name}")
+            continue
         try:
             created = sink.post(f"/organizations/{org}/workflows/", body, f"workflow {name}")
         except ApiError as exc:
             _fail(report, f"workflow {name}", exc)
             continue
-        dest.workflows_by_name[name] = created
+        dest.workflow_keys.add(key)
         _remember(state, "workflows", workflow.get("id"), created.get("id"), state_path, options.dry_run)
 
 

@@ -10,9 +10,11 @@ import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
+from unittest import mock
 
 import httpx
 
+from org_copy import cli
 from org_copy.cli import main
 from org_copy.client import SentryClient, next_link
 from tests.fake_sentry import FakeSentry, MemoryOrg, seed
@@ -43,6 +45,20 @@ class ClientTests(unittest.TestCase):
         self.assertEqual([row["slug"] for row in rows], ["a", "b"])
         self.assertGreaterEqual(calls["n"], 3)
 
+    def test_rate_limit_retry_keeps_query(self) -> None:
+        urls: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            urls.append(str(request.url))
+            if len(urls) == 1:
+                return httpx.Response(429, headers={"Retry-After": "0"}, json={"detail": "slow"})
+            return httpx.Response(200, json=[])
+
+        with SentryClient("https://us.sentry.io", "token", "o", transport=httpx.MockTransport(handler)) as client:
+            client.get_all("/organizations/o/workflows/", {"project": "-1"})
+        self.assertEqual(len(urls), 2)
+        self.assertTrue(all(url.endswith("?project=-1") for url in urls))
+
 
 class CopyTests(unittest.TestCase):
     def test_export_plan_and_apply_round_trip(self) -> None:
@@ -59,7 +75,7 @@ class CopyTests(unittest.TestCase):
         os.chdir(work.name)
         SentryClient.__init__ = patched  # type: ignore[method-assign]
         try:
-            self.assertEqual(_run(["export", "--source-org", "sana-us", "--source-token", "us-token"]), 0)
+            self.assertEqual(_run(["export"]), 0)
             snapshot = json.loads(Path("snapshot.json").read_text())
             text = Path("snapshot.json").read_text()
             checklist = Path("manual-checklist.md").read_text()
@@ -69,7 +85,6 @@ class CopyTests(unittest.TestCase):
             self.assertIn("super-secret-splunk-token", text)
             self.assertNotIn("super-secret-splunk-token", checklist)
             self.assertIn("saml2", checklist)
-            self.assertIn("Homepage uptime", checklist)
             self.assertIn("CI Upload", checklist)
             self.assertIn("staging", checklist)
             self.assertEqual(stat.S_IMODE(os.stat("snapshot.json").st_mode), 0o600)
@@ -79,7 +94,7 @@ class CopyTests(unittest.TestCase):
             plan_out = StringIO()
             self.assertEqual(
                 _run(
-                    ["plan", "--dest-org", "sana-de", "--dest-token", "de-token"],
+                    ["plan"],
                     stdout=plan_out,
                 ),
                 0,
@@ -93,10 +108,6 @@ class CopyTests(unittest.TestCase):
                 _run(
                     [
                         "apply",
-                        "--dest-org",
-                        "sana-de",
-                        "--dest-token",
-                        "de-token",
                         "--send-invites",
                         "--hide-environments",
                         "--apply-replay-access",
@@ -114,13 +125,13 @@ class CopyTests(unittest.TestCase):
 
             again = StringIO()
             self.assertEqual(
-                _run(["apply", "--dest-org", "sana-de", "--dest-token", "de-token"], stdout=again),
+                _run(["apply"], stdout=again),
                 0,
             )
             self.assertIn("skip team backend", again.getvalue())
             self.assertEqual(len(dest.teams), 1)
-            self.assertEqual(len(dest.workflows), 1)
-            self.assertEqual(len(dest.projects), 1)
+            self.assertEqual(len(dest.workflows), len(fake.orgs[("us.sentry.io", "sana-us")].workflows))
+            self.assertEqual(len(dest.projects), 2)
             self._assert_destination(fake)
         finally:
             SentryClient.__init__ = original  # type: ignore[method-assign]
@@ -142,11 +153,12 @@ class CopyTests(unittest.TestCase):
         keys = {key["name"]: key for key in project["keys"]}
         self.assertEqual(keys["Production"]["rateLimit"], {"window": 60, "count": 10})
         self.assertTrue(keys["Loader"]["dynamicSdkLoaderOptions"]["hasReplay"])
-        self.assertEqual(len(project["detectors"]), 1)
-        self.assertEqual(project["detectors"][0]["type"], "metric_issue")
-        self.assertIsNone(project["detectors"][0]["dataSources"][0]["environment"])
-        self.assertEqual(project["detectors"][0]["dataSources"][0]["queryType"], 0)
-        self.assertTrue(project["detectors"][0]["owner"].startswith("team:"))
+        metric = [detector for detector in project["detectors"] if detector["type"] == "metric_issue"]
+        self.assertEqual(len(metric), 1)
+        self.assertIsNone(metric[0]["dataSources"][0]["environment"])
+        self.assertEqual(metric[0]["dataSources"][0]["queryType"], 0)
+        self.assertTrue(metric[0]["owner"].startswith("team:"))
+        self._assert_alert_parity(fake)
         workflow = dest.workflows[0]
         actions = workflow["actionFilters"][0]["actions"]
         self.assertTrue(actions)
@@ -177,6 +189,37 @@ class CopyTests(unittest.TestCase):
         self.assertEqual({item["key"] for item in dsn_map}, {"Production", "Loader"})
         self.assertTrue(all(item["dsn"].startswith("https://") for item in dsn_map))
         self.assertTrue(all("ingest.sentry.io" not in item["dsn"] or "de.sentry.io" in item["dsn"] for item in dsn_map))
+
+
+    def _assert_alert_parity(self, fake) -> None:
+        source = fake.orgs[("us.sentry.io", "sana-us")]
+        dest = fake.orgs[("de.sentry.io", "sana-de")]
+        self.assertEqual(len(dest.workflows), len(source.workflows))
+        self.assertEqual(len(dest.monitors), len(source.monitors))
+
+        def detector_id(project: str, kind: str) -> str:
+            found = [item["id"] for item in dest.projects[project]["detectors"] if item["type"] == kind]
+            self.assertEqual(len(found), 1, f"{kind} on {project}")
+            return str(found[0])
+
+        uptime = next(item for item in dest.projects["api"]["detectors"] if item["type"] == "uptime_domain_failure")
+        self.assertEqual(uptime["dataSources"], [{"url": "https://example.com", "method": "GET", "intervalSeconds": 60, "timeoutMs": 5000}])
+        self.assertEqual(uptime["config"], {"mode": 1, "environment": "production", "recoveryThreshold": 1, "downtimeThreshold": 3})
+        linked = sorted((item["name"], [str(value) for value in item["detectorIds"]]) for item in dest.workflows)
+        expected = sorted(
+            [
+                ("Notify on new issue", [detector_id("api", "metric_issue")]),
+                ("Send a notification for high priority issues", [detector_id("api", "issue_stream")]),
+                ("Send a notification for high priority issues", [detector_id("web", "issue_stream")]),
+                ("Nightly missed", [detector_id("api", "monitor_check_in_failure")]),
+                ("Homepage down", [detector_id("api", "uptime_domain_failure")]),
+                ("Any new issue", ["300"]),
+                ("Draft alert", []),
+            ]
+        )
+        self.assertEqual(linked, expected)
+        slack_only = next(item for item in dest.workflows if item["name"] == "Nightly missed")
+        self.assertEqual(slack_only["actionFilters"][0]["actions"], [])
 
 
 class TeamAdminTests(unittest.TestCase):
@@ -230,7 +273,7 @@ class TeamAdminTests(unittest.TestCase):
         SentryClient.__init__ = patched  # type: ignore[method-assign]
         try:
             Path("snapshot.json").write_text(json.dumps(snapshot))
-            code = _run(["update-team-admins", "--dest-org", "sana-de", "--dest-token", "de-token"])
+            code = _run(["update-team-admins"])
             self.assertEqual(code, 1)
             puts = [call for call in dest.calls if call[0] == "PUT"]
             self.assertEqual(puts, [("PUT", "/organizations/sana-de/members/1/teams/backend/")])
@@ -243,7 +286,7 @@ class TeamAdminTests(unittest.TestCase):
             dest.members[3]["pending"] = False
             again = StringIO()
             self.assertEqual(
-                _run(["update-team-admins", "--dest-org", "sana-de", "--dest-token", "de-token"], stdout=again),
+                _run(["update-team-admins"], stdout=again),
                 0,
             )
             self.assertIn("skip team role admin for member@example.com on backend", again.getvalue())
@@ -254,10 +297,123 @@ class TeamAdminTests(unittest.TestCase):
             work.cleanup()
 
 
+ANSWERS = {
+    "Source org slug: ": "sana-us",
+    "Source token: ": "us-token",
+    "Destination org slug: ": "sana-de",
+    "Destination token: ": "de-token",
+}
+
+
+class GuidedTests(unittest.TestCase):
+    def _guided(self, choice: str, invites: str = "n", write: str = "y") -> tuple[int, MemoryOrg, str]:
+        fake = seed()
+        dest = fake.orgs[("de.sentry.io", "sana-de")]
+        transport = httpx.MockTransport(fake.handle)
+        original = SentryClient.__init__
+
+        def patched(self, host: str, token: str, org: str, **kwargs: object) -> None:
+            kwargs["transport"] = transport
+            original(self, host, token, org, **kwargs)
+
+        answers = {
+            **ANSWERS,
+            "Source host [https://us.sentry.io]: ": "",
+            "Destination host [https://de.sentry.io]: ": "",
+            "Choose 1 or 2: ": choice,
+            "Email invites to the source members now? [y/N]: ": invites,
+            "Write the changes above to sana-de? [y/N]: ": write,
+        }
+        previous = os.getcwd()
+        work = tempfile.TemporaryDirectory()
+        os.chdir(work.name)
+        SentryClient.__init__ = patched  # type: ignore[method-assign]
+        err = StringIO()
+        try:
+            with (
+                redirect_stdout(StringIO()),
+                redirect_stderr(err),
+                mock.patch.dict(os.environ),
+                mock.patch("sys.stdin.isatty", return_value=True),
+                mock.patch("builtins.input", side_effect=answers.__getitem__),
+                mock.patch("getpass.getpass", side_effect=answers.__getitem__),
+            ):
+                code = main([])
+            self.assertTrue(Path("snapshot.json").exists())
+            self.assertEqual(Path("dsn-map.json").exists(), choice == "1" and write == "y")
+        finally:
+            SentryClient.__init__ = original  # type: ignore[method-assign]
+            os.chdir(previous)
+            work.cleanup()
+        return code, dest, err.getvalue()
+
+    def test_plan_writes_nothing(self) -> None:
+        code, dest, err = self._guided("2")
+        self.assertEqual(code, 0)
+        self.assertEqual([call for call in dest.calls if call[0] != "GET"], [])
+        self.assertIn("Nothing was written to sana-de", err)
+
+    def test_start_migration_runs_end_to_end(self) -> None:
+        code, dest, err = self._guided("1")
+        self.assertEqual(code, 0)
+        self.assertEqual(sorted(dest.projects), ["api", "web"])
+        self.assertFalse([call for call in dest.calls if call[0] == "POST" and call[1].endswith("/members/")])
+        self.assertIn("start with Review the destination", err)
+
+    def test_start_migration_can_be_stopped_before_writing(self) -> None:
+        code, dest, err = self._guided("1", write="n")
+        self.assertEqual(code, 1)
+        self.assertEqual([call for call in dest.calls if call[0] != "GET"], [])
+        self.assertIn("Stopped. Nothing was written to sana-de", err)
+
+
+class CredentialTests(unittest.TestCase):
+    def test_always_asks_for_org_and_token(self) -> None:
+        with (
+            mock.patch.dict(os.environ, {}, clear=True),
+            mock.patch("sys.stdin.isatty", return_value=True),
+            mock.patch("builtins.input", return_value=" sana-de ") as ask,
+            mock.patch("getpass.getpass", return_value="de-token") as ask_secret,
+        ):
+            self.assertEqual(cli._org_and_token("DEST", "Destination"), ("sana-de", "de-token"))
+        ask.assert_called_once_with("Destination org slug: ")
+        ask_secret.assert_called_once_with("Destination token: ")
+
+    def test_ignores_and_clears_values_from_earlier_sessions(self) -> None:
+        err = StringIO()
+        with (
+            mock.patch.dict(os.environ, {"SOURCE_ORG": "old-org", "SOURCE_TOKEN": "old-token"}, clear=True),
+            mock.patch("sys.stdin.isatty", return_value=True),
+            mock.patch("builtins.input", return_value="sana-us"),
+            mock.patch("getpass.getpass", return_value="us-token"),
+            redirect_stderr(err),
+        ):
+            self.assertEqual(cli._org_and_token("SOURCE", "Source"), ("sana-us", "us-token"))
+            self.assertNotIn("SOURCE_ORG", os.environ)
+            self.assertNotIn("SOURCE_TOKEN", os.environ)
+        self.assertIn("Ignoring SOURCE_ORG and SOURCE_TOKEN from the environment", err.getvalue())
+        self.assertNotIn("old-token", err.getvalue())
+
+    def test_without_terminal_exits(self) -> None:
+        with (
+            mock.patch.dict(os.environ, {"DEST_ORG": "sana-de", "DEST_TOKEN": "de-token"}, clear=True),
+            mock.patch("sys.stdin.isatty", return_value=False),
+        ):
+            with self.assertRaisesRegex(SystemExit, "DEST_ORG"):
+                cli._org_and_token("DEST", "Destination")
+
+
 def _run(args: list[str], stdout: StringIO | None = None) -> int:
     out = stdout or StringIO()
     err = StringIO()
-    with redirect_stdout(out), redirect_stderr(err):
+    with (
+        redirect_stdout(out),
+        redirect_stderr(err),
+        mock.patch.dict(os.environ),
+        mock.patch("sys.stdin.isatty", return_value=True),
+        mock.patch("builtins.input", side_effect=ANSWERS.__getitem__),
+        mock.patch("getpass.getpass", side_effect=ANSWERS.__getitem__),
+    ):
         return main(args)
 
 

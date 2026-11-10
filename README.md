@@ -22,24 +22,31 @@ Source token:
 - `project:read`
 - `member:read`
 - `team:read`
-- `alerts:read`
 
 Destination token:
 
 - `org:write`
 - `project:write`
 - `member:read`
+- `team:write`, to rename a destination team that already exists with the same slug
 
-If you plan to pass `--send-invites` to invite users to join the new organisation, you will need to create a personal token instead (integration tokens can only be used to invite users with the `member` role), and will have to add the `member:write` scope.
+These scopes are separate. `org:write` does not include `project:write`, `member:read`, or `team:write`.
 
-These scopes are separate. `org:write` does not include `project:write` or `member:read`.
+To send invites, the destination token also needs `member:write`. An integration token can only invite people with the `member` role, so invites for admins, managers, and owners fail. Use a personal token from an owner of the destination org to invite them. Owners can invite every role.
 
-Do not commit the tokens. Pass them as environment variables:
+Integration tokens can't change these, whatever their scopes. Set them by hand on the destination after `apply`:
 
-```bash
-export SOURCE_TOKEN="..."
-export DEST_TOKEN="..."
-```
+- **Require 2FA.** Sentry only turns it on for a token whose user has 2FA, and an integration's user has none.
+- **Default role.** Sentry only changes it with `org:admin` and ignores it otherwise, without an error.
+- **Custom Sentry apps.** An integration token can't list the apps installed on the source, so the checklist can't name them. Check the source's Custom Integrations settings for the list.
+
+## Org slugs and tokens
+
+You don't need to set any environment variables. When it starts, `org-copy` asks for the details of both orgs. Tokens are not echoed.
+
+It asks on every run, so a run never reuses an org or token from an earlier session. If `SOURCE_ORG`, `SOURCE_TOKEN`, `DEST_ORG`, or `DEST_TOKEN` is set in the environment, `org-copy` ignores it, removes it for that run, and asks again. It needs a terminal; without one, such as in CI, it stops with an error.
+
+Do not commit the tokens. They cannot be passed as command-line flags, so they stay out of shell history.
 
 ## What is copied
 
@@ -48,9 +55,10 @@ export DEST_TOKEN="..."
 - Team membership for people who already belong to the destination organization
 - Projects, project settings, inbound filters, and ownership rules
 - New client keys, with new DSNs. The source DSN secret is not reused.
-- Alerts. Actions that depend on an integration, such as Slack or PagerDuty, are dropped and listed in the checklist.
+- Alerts, connected to the same monitors and projects as in the source, including alerts that have the same name in several projects and alerts that cover all projects. Actions that depend on an integration, such as Slack or PagerDuty, are dropped and listed in the checklist until the integration is set up.
 - Metric monitors
 - Cron monitors
+- Uptime monitors. Auto-detected uptime monitors become manual ones, because the API only creates manual monitors.
 - Custom dashboards. Prebuilt dashboards are skipped.
 - Discover saved queries and recent searches
 - Issue views that belong to the token user
@@ -62,7 +70,6 @@ export DEST_TOKEN="..."
 
 - SSO, SAML, and SCIM
 - Integrations, repositories, code mappings, code owners, and service hooks
-- Uptime monitors
 - Organization auth tokens (names and scopes only)
 - Releases, source maps, and debug files
 - Hidden environments, until events create them
@@ -71,49 +78,57 @@ export DEST_TOKEN="..."
 
 Switch SDK DSNs last, after alerts in the destination organization are working. New DSNs are written to `dsn-map.json`.
 
+## Review after apply
+
+After `apply`, `manual-checklist.md` starts with three sections for the review:
+
+- **Review the destination** lists how many teams, projects, members, alerts, monitors, dashboards, saved queries, issue views, and data forwarders the source has, so you can compare them with the destination. It also lists the source's 2FA, data scrubbing, and relay settings, because the API can drop a rejected org setting without a failure.
+- **Finish by hand** lists what needs people to accept their invites first: team admin roles, alert recipients and owners who were not members yet, and ownership rules that could not be saved.
+- **Known gaps to check** lists what the script does not copy exactly, such as alert conditions that name a user or team.
+
 ## Run
 
-Export reads the source organization and writes `snapshot.json` plus a checklist. It does not change either organization.
-
 ```bash
-org-copy export \
-  --source-host https://us.sentry.io \
-  --source-org SOURCE_ORG \
-  --source-token "$SOURCE_TOKEN"
+org-copy
 ```
 
-Plan compares that snapshot with the destination and prints the writes it would make. It does not write.
+`org-copy` asks for:
+
+1. Source host. Press Enter for `https://us.sentry.io`.
+2. Source org slug and token.
+3. Destination host. Press Enter for `https://de.sentry.io`.
+4. Destination org slug and token.
+
+Then it offers two options:
+
+- **Start migration** copies everything from start to finish. It reads the source, shows the changes it will make to the destination, asks whether to email invites to the source members, and asks you to confirm before it writes anything. When it finishes, open `manual-checklist.md` and start with **Review the destination**.
+- **Plan** changes nothing in either org. It reads the source and prints what Start migration would copy to the destination. Use it first to check the source configuration.
+
+Both options write the local files listed under Output files. Plan does not write `dsn-map.json`.
+
+The command exits with status 1 when a step fails. Other steps still run. Read the checklist for the failures.
+
+### One step at a time
+
+The steps can also be run on their own, for example to use the flags below. Each one asks only for the org it needs.
 
 ```bash
-org-copy plan \
-  --dest-host https://de.sentry.io \
-  --dest-org DEST_ORG \
-  --dest-token "$DEST_TOKEN"
+org-copy export     # read the source into snapshot.json. Asks for the source org.
+org-copy plan       # show what apply would write. Asks for the destination org.
+org-copy apply      # write the settings. Asks for the destination org.
 ```
 
-Apply writes the settings. Run it again to skip objects that already match by slug or name.
+Pass `--source-host` or `--dest-host` to use other regions.
+
+Update team admins runs after every invited member has accepted. Invites only add people to teams, so team roles are not copied. This command reads the same `snapshot.json` and sets `teamRole` to `admin` on the destination for members whose org role is `member` and who were admins of a team in the source. The destination token's `org:write` is enough. The destination org needs team roles; without them, Sentry ignores the change.
 
 ```bash
-org-copy apply \
-  --dest-host https://de.sentry.io \
-  --dest-org DEST_ORG \
-  --dest-token "$DEST_TOKEN"
+org-copy update-team-admins
 ```
-
-Update team admins runs after every invited member has accepted. Invites only add people to teams, so team roles are not copied. This command reads the same `snapshot.json` and sets `teamRole` to `admin` on the destination for members whose org role is `member` and who were admins of a team in the source. It needs `member:write` on the destination token.
-
-```bash
-org-copy update-team-admins \
-  --dest-host https://de.sentry.io \
-  --dest-org DEST_ORG \
-  --dest-token "$DEST_TOKEN"
-```
-
-`SOURCE_HOST` defaults to `https://us.sentry.io`. `DEST_HOST` defaults to `https://de.sentry.io`. Org slugs and tokens can also be set with `SOURCE_ORG`, `DEST_ORG`, `SOURCE_TOKEN`, and `DEST_TOKEN`.
-
-The command exits with status 1 when an export or apply step fails. Other steps still run. Read the checklist for the failures.
 
 ## Flags
+
+These flags work with `plan` and `apply`. Start migration copies forwarders and asks about invites.
 
 `--send-invites` emails people who are not already members of the destination organization. Without it, existing members are added to the copied teams and nobody new is invited.
 
@@ -130,6 +145,6 @@ These files are gitignored because they contain customer settings and credential
 - `snapshot.json` holds the source export. Data-forwarder secrets stay in this file.
 - `state.json` maps source ids to destination ids so a later apply does not create duplicates.
 - `dsn-map.json` lists the new destination DSNs.
-- `manual-checklist.md` lists work that still has to be done by hand.
+- `manual-checklist.md` lists work that still has to be done by hand and, after apply, what to review in the destination.
 
 All four are written with mode `0600`.
