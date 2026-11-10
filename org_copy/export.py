@@ -61,7 +61,9 @@ def export_snapshot(client: SentryClient) -> dict[str, Any]:
         _note_optional(errors, "workflows", workflow_error)
         alert_rules, alert_error = client.get_optional_list(f"/organizations/{org}/alert-rules/", LIST_PARAMS)
         _note_optional(errors, "alert-rules", alert_error)
-        summary.append(f"{len(workflows) + len(alert_rules)} found")
+        summary.append(f"{len(workflows)} found")
+        if alert_rules:
+            summary.append(f"{len(alert_rules)} legacy")
     with progress.section("Cron monitors") as summary:
         monitors, monitor_error = client.get_optional_list(f"/organizations/{org}/monitors/", ALL_PROJECTS)
         _note_optional(errors, "monitors", monitor_error)

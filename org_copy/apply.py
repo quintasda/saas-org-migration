@@ -70,6 +70,8 @@ class ObjectKind:
     # How the Sink summaries and failure steps for this kind start.
     prefixes: tuple[str, ...]
     count: Callable[[dict[str, Any]], int]
+    # How apply decides that the destination already has one.
+    match: str
 
 
 def _count(key: str) -> Callable[[dict[str, Any]], int]:
@@ -77,27 +79,43 @@ def _count(key: str) -> Callable[[dict[str, Any]], int]:
 
 
 OBJECT_KINDS = (
-    ObjectKind("Teams", "Teams", ("team ",), _count("teams")),
-    ObjectKind("Projects", "Projects", ("project ",), _count("projects")),
-    ObjectKind("Data forwarders", "Data forwarders", ("forwarder ",), _count("forwarders")),
-    ObjectKind("Cron monitors", "Cron monitors", ("cron monitor ",), _count("monitors")),
-    ObjectKind("Monitors", "Monitors", ("detector ",), lambda snapshot: len(_iter_detectors(snapshot))),
-    ObjectKind("Alerts", "Alerts", ("workflow ",), _count("workflows")),
+    ObjectKind("Teams", "Teams", ("team ",), _count("teams"), "same slug"),
+    ObjectKind("Projects", "Projects", ("project ",), _count("projects"), "same slug, its settings are updated"),
+    ObjectKind("Data forwarders", "Data forwarders", ("forwarder ",), _count("forwarders"), "same provider, updated"),
+    ObjectKind("Cron monitors", "Cron monitors", ("cron monitor ",), _count("monitors"), "same slug"),
+    ObjectKind(
+        "Monitors",
+        "Monitors",
+        ("detector ",),
+        lambda snapshot: len(_iter_detectors(snapshot)),
+        "same name in the same project",
+    ),
+    ObjectKind("Alerts", "Alerts", ("workflow ",), _count("workflows"), "same name and monitors"),
     ObjectKind(
         "Legacy alert rules",
         "Legacy alert rules",
         ("issue rule ", "metric alert "),
         lambda snapshot: len(snapshot.get("alertRules") or [])
         + sum(len(project.get("rules") or []) for project in snapshot.get("projects") or []),
+        "same name",
     ),
-    ObjectKind("Dashboards", "Dashboards", ("dashboard ",), _count("dashboards")),
-    ObjectKind("Saved queries", "Saved queries and recent searches", ("saved query ",), _count("savedQueries")),
-    ObjectKind("Recent searches", "Saved queries and recent searches", ("recent search ",), _count("recentSearches")),
+    ObjectKind("Dashboards", "Dashboards", ("dashboard ",), _count("dashboards"), "same title"),
+    ObjectKind(
+        "Saved queries", "Saved queries and recent searches", ("saved query ",), _count("savedQueries"), "same name"
+    ),
+    ObjectKind(
+        "Recent searches",
+        "Saved queries and recent searches",
+        ("recent search ",),
+        _count("recentSearches"),
+        "same query",
+    ),
     ObjectKind(
         "Issue views",
         "Issue views",
         ("issue view ",),
         lambda snapshot: len((snapshot.get("issueViews") or {}).get("mine") or []),
+        "same name",
     ),
 )
 
@@ -152,10 +170,12 @@ class Sink:
         self.report.actions.append(f"updated {summary}")
         return result
 
-    def skip(self, summary: str) -> None:
-        """Record an object that is not created. A reason in parentheses means it is not copied."""
-        if summary in self._created:
-            summary += " (duplicate of another in the source)"
+    def skip(self, summary: str, not_copied: str | None = None) -> None:
+        """Record an object that is not created: already in the destination, or not copied for a reason."""
+        if not_copied is None and summary in self._created:
+            not_copied = "duplicate of another in the source"
+        if not_copied:
+            summary += f"{NOT_COPIED_START}{not_copied})"
         self.report.actions.append(f"skip {summary}")
 
 
@@ -246,12 +266,16 @@ def _section_prefixes(label: str) -> tuple[str, ...]:
     return tuple(prefix for kind in OBJECT_KINDS if kind.section == label for prefix in kind.prefixes)
 
 
+# Marks a skip that is not copied, as in "skip dashboard Errors (not copied: prebuilt)".
+NOT_COPIED_START = " (not copied: "
+
+
 def action_outcome(action: str) -> str:
     """Name what an action does to its object: create, created, update, updated, existing, or not copied."""
     verb, _, rest = action.partition(" ")
     if verb != "skip":
         return verb
-    return "not copied" if rest.endswith(")") else "existing"
+    return "not copied" if NOT_COPIED_START in rest else "existing"
 
 
 # How each outcome reads in a section summary.
@@ -427,7 +451,7 @@ def _apply_org(snapshot: dict[str, Any], sink: Sink, dest: _DestIndex, report: A
     organization = snapshot.get("organization") or {}
     body = org_settings_body(organization)
     if not body:
-        sink.skip("org settings (nothing to copy)")
+        sink.skip("org settings", "nothing to copy")
         return
     try:
         _result, dropped = _put_dropping(sink, f"/organizations/{sink.client.org}/", body, "org settings")
@@ -859,10 +883,10 @@ def _apply_detectors(
             existing = _existing_dest_detector(detector, dest, project_map)
             if existing:
                 detector_map[source_id] = str(existing.get("id"))
-                sink.skip(f"detector {name} on {slug} (built in, the destination has its own)")
+                sink.skip(f"detector {name} on {slug}", "built in, the destination has its own")
             elif sink.dry_run and _planned(detector, dest, project_map):
                 detector_map[source_id] = f"{kind} on {slug}"
-                sink.skip(f"detector {name} on {slug} (built in, the new project gets its own)")
+                sink.skip(f"detector {name} on {slug}", "built in, the new project gets its own")
             else:
                 report.failures.append(
                     {
@@ -908,7 +932,7 @@ def _apply_workflows(
     for workflow in progress.items(snapshot.get("workflows") or []):
         name = workflow.get("name")
         if not name:
-            sink.skip("workflow (no name)")
+            sink.skip("workflow ", "no name")
             continue
         unmapped = [str(item) for item in workflow.get("detectorIds") or [] if str(item) not in detector_map]
         if unmapped:
@@ -957,7 +981,7 @@ def _apply_legacy_rules(
             if not name or not slug:
                 continue
             if name in workflow_names:
-                sink.skip(f"issue rule {name} on {slug} (copied as the alert with the same name)")
+                sink.skip(f"issue rule {name} on {slug}", "copied as the alert with the same name")
                 continue
             if dest.rules_by_key.get(f"{slug}:{name}"):
                 sink.skip(f"issue rule {name} on {slug}")
@@ -1002,7 +1026,7 @@ def _apply_metric_rules(
         if not name:
             continue
         if name in workflow_names:
-            sink.skip(f"metric alert {name} (copied as the alert with the same name)")
+            sink.skip(f"metric alert {name}", "copied as the alert with the same name")
             continue
         if dest.alert_rules_by_name.get(name):
             sink.skip(f"metric alert {name}")
@@ -1081,7 +1105,7 @@ def _apply_dashboards(
     org = sink.client.org
     for dashboard in progress.items(snapshot.get("dashboards") or []):
         if dashboard.get("prebuiltId"):
-            sink.skip(f"dashboard {dashboard.get('title')} (prebuilt, the destination has its own)")
+            sink.skip(f"dashboard {dashboard.get('title')}", "prebuilt, the destination has its own")
             continue
         title = dashboard.get("title")
         if not title:

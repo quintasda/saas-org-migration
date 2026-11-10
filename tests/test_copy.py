@@ -361,7 +361,13 @@ class GuidedTests(unittest.TestCase):
         self.assertIn("  [8/13] Monitors: 2 to create, 4 not copied", err)
         self.assertIn("Check before writing to sana-de", err)
         self.assertIn("  Monitors                6          2              0           4\n", err)
-        self.assertIn("  Dashboards: 1 prebuilt, the destination has its own", err)
+        self.assertIn(
+            "Why the numbers differ:\n"
+            "  Monitors: 6 in sana-us, 2 to create\n"
+            "    3 built in, the new project gets its own: Issue stream on api, Nightly on api, Issue stream on web\n",
+            err,
+        )
+        self.assertIn("  Dashboards: 2 in sana-us, 1 to create\n    1 prebuilt, the destination has its own: Prebuilt\n", err)
         self.assertIn("  [13/13] Issue views: 1 to create", err)
 
     def test_start_migration_runs_end_to_end(self) -> None:
@@ -407,8 +413,8 @@ class CheckpointTests(unittest.TestCase):
     def test_explains_every_alert_that_is_not_created(self) -> None:
         actions = [
             "create workflow Errors",
-            "skip workflow Errors (duplicate of another in the source)",
-            "skip workflow Latency",
+            "skip workflow Errors (not copied: duplicate of another in the source)",
+            *(f"skip workflow Latency {n}" for n in range(1, 6)),
             "create detector Slow on api",
         ]
         report = ApplyReport(
@@ -416,12 +422,18 @@ class CheckpointTests(unittest.TestCase):
                 SectionResult("Alerts", "", actions, [{"step": "workflow Crons", "detail": "monitor was not copied"}])
             ]
         )
-        snapshot = {"workflows": [{}] * 5}
+        snapshot = {"workflows": [{}] * 9}
         text = render_checkpoint(snapshot, report, "src-org", "dest-org")
-        self.assertIn("  Alerts       5          1              1           3\n", text)
-        self.assertIn("  Alerts: 1 duplicate of another in the source\n", text)
-        self.assertIn("  Alerts: 1 failed, listed under Went wrong\n", text)
-        self.assertIn("  Alerts: 1 not in the plan, such as an entry with no name\n", text)
+        self.assertIn("  Alerts       9          1              5           3\n", text)
+        self.assertIn(
+            "Why the numbers differ:\n"
+            "  Alerts: 9 in src-org, 1 to create\n"
+            "    5 already in dest-org (same name and monitors): Latency 1, Latency 2, Latency 3, and 2 more\n"
+            "    1 duplicate of another in the source: Errors\n"
+            "    1 failed, listed under Went wrong: Crons: monitor was not copied\n"
+            "    1 not in the plan, such as an entry with no name\n",
+            text,
+        )
 
 
     def test_sink_tells_duplicates_from_objects_already_there(self) -> None:
@@ -434,7 +446,7 @@ class CheckpointTests(unittest.TestCase):
             report.actions,
             [
                 "create dashboard Errors",
-                "skip dashboard Errors (duplicate of another in the source)",
+                "skip dashboard Errors (not copied: duplicate of another in the source)",
                 "skip dashboard Latency",
             ],
         )
