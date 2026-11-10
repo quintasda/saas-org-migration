@@ -60,7 +60,7 @@ Do not commit the tokens. They cannot be passed as command-line flags, so they s
 - Cron monitors
 - Uptime monitors. Auto-detected uptime monitors become manual ones, because the API only creates manual monitors.
 - Custom dashboards. Prebuilt dashboards are skipped.
-- Discover saved queries
+- Discover saved queries, and Explore saved queries for spans, logs, and metrics. Prebuilt Explore queries are skipped.
 - Issue views that belong to the token user
 - Data forwarders, including their configuration
 

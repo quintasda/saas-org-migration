@@ -44,6 +44,7 @@ def empty_state() -> dict[str, Any]:
         "monitors": {},
         "dashboards": {},
         "queries": {},
+        "exploreQueries": {},
         "views": {},
         "forwarders": {},
         "keys": {},

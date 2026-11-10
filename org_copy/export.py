@@ -72,7 +72,10 @@ def export_snapshot(client: SentryClient) -> dict[str, Any]:
             f"/organizations/{org}/discover/saved/", LIST_PARAMS
         )
         _note_optional(errors, "saved queries", query_error)
-        summary.append(f"{len(saved_queries)} found")
+        # Explore holds span, log, and metric queries, plus Discover transaction queries migrated to spans.
+        explore_queries, explore_error = client.get_optional_list(f"/organizations/{org}/explore/saved/", LIST_PARAMS)
+        _note_optional(errors, "explore saved queries", explore_error)
+        summary.append(f"{len(saved_queries) + len(explore_queries)} found")
     with progress.section("Issue views") as summary:
         my_views, my_error = client.get_optional_list(
             f"/organizations/{org}/group-search-views/",
@@ -115,6 +118,7 @@ def export_snapshot(client: SentryClient) -> dict[str, Any]:
         "monitors": monitors,
         "dashboards": dashboards,
         "savedQueries": saved_queries,
+        "exploreQueries": explore_queries,
         "issueViews": {"mine": my_views, "others": other_views},
         "forwarders": forwarders,
         "integrations": [_public_integration(item) for item in integrations],

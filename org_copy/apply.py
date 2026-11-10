@@ -18,6 +18,7 @@ from org_copy.remap import (
     build_user_map,
     dashboard_body,
     detector_create_body,
+    explore_query_body,
     fields_to_drop,
     issue_view_body,
     member_email,
@@ -91,6 +92,7 @@ OBJECT_KINDS = (
     ObjectKind("Alerts", "Alerts", ("workflow ",), _count("workflows"), "same name and monitors"),
     ObjectKind("Dashboards", "Dashboards", ("dashboard ",), _count("dashboards"), "same title"),
     ObjectKind("Saved queries", "Saved queries", ("saved query ",), _count("savedQueries"), "same name"),
+    ObjectKind("Explore saved queries", "Saved queries", ("explore query ",), _count("exploreQueries"), "same name"),
     ObjectKind(
         "Issue views",
         "Issue views",
@@ -207,6 +209,7 @@ def apply_snapshot(
         _apply_dashboards(snapshot, sink, dest, state, state_path, options, team_map, project_map, report, progress)
     with _section(progress, report, "Saved queries"):
         _apply_queries(snapshot, sink, dest, state, state_path, options, project_map, report)
+        _apply_explore_queries(snapshot, sink, dest, state, state_path, options, project_map, report)
     with _section(progress, report, "Issue views"):
         _apply_views(snapshot, sink, dest, state, state_path, options, project_map, report)
     if options.send_invites:
@@ -293,6 +296,7 @@ class _DestIndex:
         self.monitors_by_slug: dict[str, dict[str, Any]] = {}
         self.dashboards_by_title: dict[str, dict[str, Any]] = {}
         self.queries_by_name: dict[str, dict[str, Any]] = {}
+        self.explore_queries_by_name: dict[str, dict[str, Any]] = {}
         self.views_by_name: dict[str, dict[str, Any]] = {}
         self.forwarders_by_provider: dict[str, dict[str, Any]] = {}
         self.detectors: list[dict[str, Any]] = []
@@ -328,6 +332,9 @@ class _DestIndex:
         )
         index.dashboards_by_title = _by(client, f"/organizations/{client.org}/dashboards/", "title", report, "dashboards")
         index.queries_by_name = _by(client, f"/organizations/{client.org}/discover/saved/", "name", report, "saved queries")
+        index.explore_queries_by_name = _by(
+            client, f"/organizations/{client.org}/explore/saved/", "name", report, "explore saved queries"
+        )
         views, view_error = client.get_optional_list(
             f"/organizations/{client.org}/group-search-views/",
             {"createdBy": "me", **LIST_PARAMS},
@@ -1029,6 +1036,40 @@ def _apply_queries(
             continue
         dest.queries_by_name[name] = created
         _remember(state, "queries", query.get("id"), created.get("id"), state_path, options.dry_run)
+
+
+def _apply_explore_queries(
+    snapshot: dict[str, Any],
+    sink: Sink,
+    dest: _DestIndex,
+    state: dict[str, Any],
+    state_path: str,
+    options: ApplyOptions,
+    project_map: dict[str, str],
+    report: ApplyReport,
+) -> None:
+    org = sink.client.org
+    for query in snapshot.get("exploreQueries") or []:
+        name = query.get("name")
+        if not name:
+            continue
+        if query.get("isPrebuilt"):
+            sink.skip(f"explore query {name}", "prebuilt, the destination has its own")
+            continue
+        if dest.explore_queries_by_name.get(name):
+            sink.skip(f"explore query {name}")
+            continue
+        try:
+            created = sink.post(
+                f"/organizations/{org}/explore/saved/",
+                explore_query_body(query, project_map),
+                f"explore query {name}",
+            )
+        except ApiError as exc:
+            _fail(report, f"explore query {name}", exc)
+            continue
+        dest.explore_queries_by_name[name] = created
+        _remember(state, "exploreQueries", query.get("id"), created.get("id"), state_path, options.dry_run)
 
 
 def _apply_views(

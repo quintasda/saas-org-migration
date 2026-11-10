@@ -107,6 +107,7 @@ def _section_review(lines: list[str], snapshot: dict[str, Any]) -> None:
         ("Uptime monitors", detector_types.count("uptime_domain_failure")),
         ("Custom dashboards", sum(1 for item in snapshot.get("dashboards") or [] if not item.get("prebuiltId"))),
         ("Discover saved queries", len(snapshot.get("savedQueries") or [])),
+        ("Explore saved queries", sum(1 for item in snapshot.get("exploreQueries") or [] if not item.get("isPrebuilt"))),
         ("Issue views of the token user", len((snapshot.get("issueViews") or {}).get("mine") or [])),
         ("Data forwarders", len(snapshot.get("forwarders") or [])),
     )

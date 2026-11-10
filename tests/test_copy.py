@@ -175,6 +175,10 @@ class CopyTests(unittest.TestCase):
         self.assertEqual(len(dest.dashboards), 1)
         self.assertEqual(dest.queries[0]["projects"], [int(project["id"])])
         self.assertEqual(dest.queries[0]["version"], 2)
+        self.assertEqual([query["name"] for query in dest.explore_queries], ["Slow spans"])
+        self.assertEqual(dest.explore_queries[0]["projects"], [int(project["id"])])
+        self.assertEqual(dest.explore_queries[0]["query"][0]["query"], "span.op:db")
+        self.assertNotIn("createdBy", dest.explore_queries[0])
         self.assertEqual([view["name"] for view in dest.views], ["Prod errors"])
         self.assertEqual(dest.forwarders[0]["config"]["token"], "super-secret-splunk-token")
         self.assertEqual(dest.forwarders[0]["project_ids"], [int(project["id"])])
@@ -354,7 +358,8 @@ class GuidedTests(unittest.TestCase):
         self.assertIn("  [5/12] Projects: 2 to create, 9 related changes", err)
         self.assertIn("  [8/12] Monitors: 2 to create, 4 not copied", err)
         self.assertIn("Check before writing to sana-de", err)
-        self.assertIn("  Monitors             6          2              0           4\n", err)
+        self.assertRegex(err, r"\n  Monitors +6 +2 +0 +4\n")
+        self.assertIn("  Explore saved queries: 2 in sana-us, 1 to create\n    1 prebuilt, the destination has its own: All Transactions\n", err)
         self.assertIn(
             "Why the numbers differ:\n"
             "  Monitors: 6 in sana-us, 2 to create\n"

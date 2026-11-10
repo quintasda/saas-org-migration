@@ -565,6 +565,28 @@ def saved_query_body(query: dict[str, Any], project_map: dict[str, str]) -> dict
     return {key: value for key, value in body.items() if value is not None}
 
 
+# Top-level fields of an Explore saved query that its create endpoint accepts back.
+EXPLORE_QUERY_KEYS = (
+    "dataset",
+    "query",
+    "environment",
+    "statsPeriod",
+    "start",
+    "end",
+    "interval",
+    "crossEvents",
+    "agent",
+    "errorsOnly",
+)
+
+
+def explore_query_body(query: dict[str, Any], project_map: dict[str, str]) -> dict[str, Any]:
+    body = {key: query[key] for key in EXPLORE_QUERY_KEYS if query.get(key) is not None}
+    body["name"] = query.get("name")
+    body["projects"] = remap_project_ids(list(query.get("projects") or []), project_map)
+    return body
+
+
 def issue_view_body(view: dict[str, Any], project_map: dict[str, str]) -> dict[str, Any]:
     return {
         "name": view.get("name"),
