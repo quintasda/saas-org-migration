@@ -106,6 +106,10 @@ Then it offers two options:
 
 Both options write the local files listed under Output files. Plan does not write `dsn-map.json`.
 
+While it runs, org-copy shows each section as it reads or writes it, such as teams, projects, alerts, and dashboards, and what the section found or changed. Long sections count up as they go, for example `Projects... 37/200`.
+
+When apply finishes, it prints a summary: what each section migrated, every step that went wrong, and what is left to do by hand, such as invites, alert actions that need an integration, settings the API did not accept, and the new DSNs. `manual-checklist.md` has the same lists, plus the source counts to compare.
+
 The command exits with status 1 when a step fails. Other steps still run. Read the checklist for the failures.
 
 ### One step at a time

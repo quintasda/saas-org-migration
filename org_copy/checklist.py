@@ -136,15 +136,20 @@ def _section_review(lines: list[str], snapshot: dict[str, Any]) -> None:
     )
 
 
-def _section_finish(lines: list[str], snapshot: dict[str, Any]) -> None:
-    lines.extend(["## Finish by hand", ""])
-    admins = [
+def team_admins_to_set(snapshot: dict[str, Any]) -> list[str]:
+    """Members who were team admins in the source. Invites don't copy team roles."""
+    return [
         f"{member_email(member)} on {item.get('teamSlug')}"
         for member in snapshot.get("members") or []
         if (member.get("orgRole") or "member") == "member"
         for item in member.get("teamRoles") or []
         if isinstance(item, dict) and item.get("role") == "admin"
     ]
+
+
+def _section_finish(lines: list[str], snapshot: dict[str, Any]) -> None:
+    lines.extend(["## Finish by hand", ""])
+    admins = team_admins_to_set(snapshot)
     if admins:
         lines.append(
             "- Invites do not copy team roles. After people accept, make them team admins in the UI "

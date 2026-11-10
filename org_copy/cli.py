@@ -13,6 +13,7 @@ from org_copy.client import ApiError, SentryClient
 from org_copy.export import export_snapshot
 from org_copy.files import load_state, read_json, write_json, write_text
 from org_copy.redact import error_text
+from org_copy.summary import render_summary
 from org_copy.team_admins import update_team_admins
 
 
@@ -117,10 +118,10 @@ def _guided() -> int:
         hide_environments=False,
         apply_replay_access=False,
     )
-    print(f"\nReading {source_org}...", file=sys.stderr)
+    print(file=sys.stderr)
     if _export(args, source_org, source_token) != 0 and not _confirm("Some settings could not be read. Continue?"):
         return 1
-    print(f"\nComparing with {dest_org}. Nothing is written yet.", file=sys.stderr)
+    print(file=sys.stderr)
     planned = _plan(args, dest_org, dest_token)
     if choice == "2":
         print(f"\nPlan only. Nothing was written to {dest_org}. Details are in {args.checklist}.", file=sys.stderr)
@@ -129,12 +130,8 @@ def _guided() -> int:
     if not _confirm(f"Write the changes above to {dest_org}?"):
         print(f"Stopped. Nothing was written to {dest_org}.", file=sys.stderr)
         return 1
+    print(file=sys.stderr)
     code = _apply(args, dest_org, dest_token)
-    print(
-        f"\nDone. Open {args.checklist} and start with Review the destination. "
-        f"New DSNs are in {args.dsn_map}.",
-        file=sys.stderr,
-    )
     return code
 
 
@@ -225,10 +222,7 @@ def _apply(args: argparse.Namespace, org: str, token: str) -> int:
     write_text(args.checklist, checklist, secret=True)
     for action in report.actions:
         print(action)
-    for note in report.notes:
-        print(f"note: {note}")
-    for failure in report.failures:
-        print(f"fail: {failure['step']}: {failure['detail']}", file=sys.stderr)
+    print("\n" + render_summary(snapshot, report, org), file=sys.stderr, end="")
     return 0 if report.ok else 1
 
 

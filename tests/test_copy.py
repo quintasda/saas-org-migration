@@ -17,6 +17,9 @@ import httpx
 from org_copy import cli
 from org_copy.cli import main
 from org_copy.client import SentryClient, next_link
+from org_copy.apply import ApplyReport
+from org_copy.progress import Progress
+from org_copy.summary import render_summary
 from tests.fake_sentry import FakeSentry, MemoryOrg, seed
 
 
@@ -352,19 +355,76 @@ class GuidedTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual([call for call in dest.calls if call[0] != "GET"], [])
         self.assertIn("Nothing was written to sana-de", err)
+        self.assertIn("  [12/12] Integrations, apps, and auth tokens: done", err)
+        self.assertIn("  [5/13] Projects: 4 to create, 7 to update", err)
+        self.assertIn("  [13/13] Issue views: 1 to create", err)
 
     def test_start_migration_runs_end_to_end(self) -> None:
         code, dest, err = self._guided("1")
         self.assertEqual(code, 0)
         self.assertEqual(sorted(dest.projects), ["api", "web"])
         self.assertFalse([call for call in dest.calls if call[0] == "POST" and call[1].endswith("/members/")])
-        self.assertIn("start with Review the destination", err)
+        self.assertIn("Writing to sana-de", err)
+        self.assertIn("  [5/13] Projects: 3 created, 7 updated", err)
+        self.assertIn("  [13/13] Issue views: 1 created", err)
+        summary = err[err.index("Summary for sana-de") :]
+        self.assertIn("Migrated:\n  Organization settings: 1 updated\n  Teams: 1 created\n", summary)
+        self.assertIn("Went wrong: nothing.", summary)
+        self.assertIn("  - Member invites were not sent.", summary)
+        self.assertIn("      Notify on new issue: slack #alerts", summary)
+        self.assertIn("  - Turn on Require 2FA", summary)
+        self.assertIn("      slack: Workspace", summary)
+        self.assertIn("      api / Production: https://", summary)
 
     def test_start_migration_can_be_stopped_before_writing(self) -> None:
         code, dest, err = self._guided("1", write="n")
         self.assertEqual(code, 1)
         self.assertEqual([call for call in dest.calls if call[0] != "GET"], [])
         self.assertIn("Stopped. Nothing was written to sana-de", err)
+
+
+class SummaryTests(unittest.TestCase):
+    def test_lists_failures_from_export_and_apply(self) -> None:
+        report = ApplyReport(
+            failures=[{"step": "project web", "detail": "403 forbidden"}],
+            sections=[("Projects", "1 created, 1 failed")],
+        )
+        snapshot = {"exportErrors": [{"step": "dashboards", "detail": "404"}]}
+        text = render_summary(snapshot, report, "sana-de")
+        self.assertIn("Migrated:\n  Projects: 1 created, 1 failed\n", text)
+        self.assertIn(
+            "Went wrong (2):\n  - Reading the source, dashboards: 404\n  - project web: 403 forbidden\n", text
+        )
+        self.assertIn("Still to do: nothing.", text)
+
+
+class TerminalStream(StringIO):
+    def isatty(self) -> bool:
+        return True
+
+
+class ProgressTests(unittest.TestCase):
+    def test_terminal_counts_items_on_the_section_line(self) -> None:
+        stream = TerminalStream()
+        progress = Progress("Reading sana-us", 1, stream)
+        with progress.section("Projects") as summary:
+            for _ in progress.items(["api", "web"]):
+                pass
+            summary.append("2 found")
+        lines = stream.getvalue().split("\r\033[K")
+        self.assertEqual(lines[0], "Reading sana-us\n")
+        self.assertEqual(lines[1:4], ["  [1/1] Projects...", "  [1/1] Projects... 1/2", "  [1/1] Projects... 2/2"])
+        self.assertRegex(lines[4], r"^  \[1/1\] Projects: 2 found \(\d+\.\ds\)\n$")
+
+    def test_log_gets_one_line_when_a_section_starts_and_ends(self) -> None:
+        stream = StringIO()
+        progress = Progress("Writing to sana-de", 1, stream)
+        with progress.section("Teams"):
+            for _ in progress.items(["backend"]):
+                pass
+        self.assertRegex(
+            stream.getvalue(), r"^Writing to sana-de\n  \[1/1\] Teams\.\.\.\n  \[1/1\] Teams: done \(\d+\.\ds\)\n$"
+        )
 
 
 class CredentialTests(unittest.TestCase):
