@@ -61,7 +61,7 @@ Do not commit the tokens. They cannot be passed as command-line flags, so they s
 - Uptime monitors. Auto-detected uptime monitors become manual ones, because the API only creates manual monitors.
 - Custom dashboards. Prebuilt dashboards are skipped.
 - Discover saved queries, and Explore saved queries for spans, logs, and metrics. Prebuilt Explore queries are skipped.
-- Issue views that belong to the token user
+- Issue views shared with the organization, including other members' views. In the destination the token user owns them. Private views stay manual.
 - Data forwarders, including their configuration
 
 ## What stays manual

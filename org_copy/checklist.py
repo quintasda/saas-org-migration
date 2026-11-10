@@ -108,7 +108,10 @@ def _section_review(lines: list[str], snapshot: dict[str, Any]) -> None:
         ("Custom dashboards", sum(1 for item in snapshot.get("dashboards") or [] if not item.get("prebuiltId"))),
         ("Discover saved queries", len(snapshot.get("savedQueries") or [])),
         ("Explore saved queries", sum(1 for item in snapshot.get("exploreQueries") or [] if not item.get("isPrebuilt"))),
-        ("Issue views of the token user", len((snapshot.get("issueViews") or {}).get("mine") or [])),
+        (
+            "Issue views shared with the organization",
+            sum(len(views) for views in (snapshot.get("issueViews") or {}).values()),
+        ),
         ("Data forwarders", len(snapshot.get("forwarders") or [])),
     )
     lines.extend(
@@ -166,9 +169,10 @@ def _section_finish(lines: list[str], snapshot: dict[str, Any]) -> None:
             "Enter them again after the people they name join.",
         ]
     )
-    others = len((snapshot.get("issueViews") or {}).get("others") or [])
-    if others:
-        lines.append(f"- Issue views that belong to other members: {others}. Each member recreates their own.")
+    lines.append(
+        "- Issue views that members kept private are not copied. Sentry does not return them, "
+        "so each member recreates their own."
+    )
     lines.append("")
 
 

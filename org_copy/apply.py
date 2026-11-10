@@ -97,8 +97,8 @@ OBJECT_KINDS = (
         "Issue views",
         "Issue views",
         ("issue view ",),
-        lambda snapshot: len((snapshot.get("issueViews") or {}).get("mine") or []),
-        "same name",
+        lambda snapshot: len(_issue_views(snapshot)),
+        "same name and query",
     ),
 )
 
@@ -297,7 +297,7 @@ class _DestIndex:
         self.dashboards_by_title: dict[str, dict[str, Any]] = {}
         self.queries_by_name: dict[str, dict[str, Any]] = {}
         self.explore_queries_by_name: dict[str, dict[str, Any]] = {}
-        self.views_by_name: dict[str, dict[str, Any]] = {}
+        self.view_keys: set[tuple[str, str]] = set()
         self.forwarders_by_provider: dict[str, dict[str, Any]] = {}
         self.detectors: list[dict[str, Any]] = []
         self.detectors_by_key: dict[str, dict[str, Any]] = {}
@@ -341,7 +341,7 @@ class _DestIndex:
         )
         if view_error and view_error.status != 404:
             report.failures.append({"step": "list destination issue views", "detail": error_text(view_error)})
-        index.views_by_name = {item.get("name"): item for item in views if item.get("name")}
+        index.view_keys = {_view_key(item) for item in views if item.get("name")}
         forwarders, forward_error = client.get_optional_list(f"/organizations/{client.org}/forwarding/")
         if forward_error and forward_error.status != 404:
             report.failures.append({"step": "list destination forwarders", "detail": error_text(forward_error)})
@@ -1082,31 +1082,39 @@ def _apply_views(
     project_map: dict[str, str],
     report: ApplyReport,
 ) -> None:
+    """Copy the token user's views and the views other members share with the organization.
+
+    The destination creates them all as the token user's, shared with the organization.
+    """
     org = sink.client.org
-    views = (snapshot.get("issueViews") or {}).get("mine") or []
-    for view in views:
+    mine = (snapshot.get("issueViews") or {}).get("mine") or []
+    for view in _issue_views(snapshot):
         name = view.get("name")
         if not name:
             continue
-        if dest.views_by_name.get(name):
+        if _view_key(view) in dest.view_keys:
             sink.skip(f"issue view {name}")
             continue
+        body = issue_view_body(view, project_map)
+        # Starring belongs to the person who starred it, so only the token user's own views keep it.
+        body["starred"] = body["starred"] and view in mine
         try:
-            created = sink.post(
-                f"/organizations/{org}/group-search-views/",
-                issue_view_body(view, project_map),
-                f"issue view {name}",
-            )
+            created = sink.post(f"/organizations/{org}/group-search-views/", body, f"issue view {name}")
         except ApiError as exc:
             _fail(report, f"issue view {name}", exc)
             continue
-        dest.views_by_name[name] = created
+        dest.view_keys.add(_view_key(view))
         _remember(state, "views", view.get("id"), created.get("id"), state_path, options.dry_run)
-    others = (snapshot.get("issueViews") or {}).get("others") or []
-    if others:
-        report.notes.append(
-            f"{len(others)} issue views belong to other members and were listed, not copied."
-        )
+
+
+def _issue_views(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+    views = snapshot.get("issueViews") or {}
+    return [*(views.get("mine") or []), *(views.get("others") or [])]
+
+
+def _view_key(view: dict[str, Any]) -> tuple[str, str]:
+    """Members often reuse view names, so a view is the same only when its query matches too."""
+    return str(view.get("name")), str(view.get("query") or "")
 
 
 def _apply_invites(snapshot: dict[str, Any], sink: Sink, dest: _DestIndex, report: ApplyReport) -> None:

@@ -179,7 +179,7 @@ class CopyTests(unittest.TestCase):
         self.assertEqual(dest.explore_queries[0]["projects"], [int(project["id"])])
         self.assertEqual(dest.explore_queries[0]["query"][0]["query"], "span.op:db")
         self.assertNotIn("createdBy", dest.explore_queries[0])
-        self.assertEqual([view["name"] for view in dest.views], ["Prod errors"])
+        self.assertEqual([view["name"] for view in dest.views], ["Prod errors", "Someone else"])
         self.assertEqual(dest.forwarders[0]["config"]["token"], "super-secret-splunk-token")
         self.assertEqual(dest.forwarders[0]["project_ids"], [int(project["id"])])
         invited = [member for member in dest.members if member["email"] == "other@example.com"]
@@ -367,7 +367,7 @@ class GuidedTests(unittest.TestCase):
             err,
         )
         self.assertIn("  Dashboards: 2 in sana-us, 1 to create\n    1 prebuilt, the destination has its own: Prebuilt\n", err)
-        self.assertIn("  [12/12] Issue views: 1 to create", err)
+        self.assertIn("  [12/12] Issue views: 2 to create", err)
 
     def test_start_migration_runs_end_to_end(self) -> None:
         code, dest, err = self._guided("1")
@@ -376,7 +376,7 @@ class GuidedTests(unittest.TestCase):
         self.assertFalse([call for call in dest.calls if call[0] == "POST" and call[1].endswith("/members/")])
         self.assertIn("Writing to sana-de", err)
         self.assertIn("  [5/12] Projects: 2 created, 8 related changes", err)
-        self.assertIn("  [12/12] Issue views: 1 created", err)
+        self.assertIn("  [12/12] Issue views: 2 created", err)
         summary = err[err.index("Summary for sana-de") :]
         self.assertIn("Migrated:\n  Organization settings: 1 updated\n  Teams: 1 created\n", summary)
         self.assertIn("Went wrong: nothing.", summary)
