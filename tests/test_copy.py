@@ -10,6 +10,7 @@ import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
 import httpx
@@ -19,6 +20,7 @@ from org_copy.cli import main
 from org_copy.client import SentryClient, next_link
 from org_copy.apply import ApplyReport, SectionResult, Sink
 from org_copy.checkpoint import render_checkpoint
+from org_copy.export import _attach_detectors
 from org_copy.progress import Progress
 from org_copy.summary import render_summary
 from tests.fake_sentry import FakeSentry, MemoryOrg, seed
@@ -447,6 +449,30 @@ class CheckpointTests(unittest.TestCase):
                 "create dashboard Errors",
                 "skip dashboard Errors (not copied: duplicate of another in the source)",
                 "skip dashboard Latency",
+            ],
+        )
+
+
+class AttachDetectorsTests(unittest.TestCase):
+    def test_reports_monitors_whose_project_was_not_read(self) -> None:
+        projects = [{"id": "10", "slug": "api", "detectors": []}]
+        detectors = [
+            {"id": "1", "name": "Slow api", "projectId": "10"},
+            {"id": "2", "name": "Slow web", "projectId": "11"},
+            {"id": "3", "name": "All projects"},
+        ]
+        errors: list[dict[str, Any]] = []
+        org_level = _attach_detectors(projects, detectors, errors)
+        self.assertEqual([item["name"] for item in org_level], ["All projects"])
+        self.assertEqual([item["name"] for item in projects[0]["detectors"]], ["Slow api"])
+        self.assertEqual(
+            errors,
+            [
+                {
+                    "step": "monitors in project 11",
+                    "status": 0,
+                    "detail": "the project was not read, so these monitors were not copied (1): Slow web",
+                }
             ],
         )
 

@@ -43,7 +43,7 @@ def export_snapshot(client: SentryClient) -> dict[str, Any]:
         org_detectors: list[dict[str, Any]] = []
         detectors, detector_error = client.get_optional_list(f"/organizations/{org}/detectors/", ALL_PROJECTS)
         if detector_error is None:
-            org_detectors = _attach_detectors(projects, detectors)
+            org_detectors = _attach_detectors(projects, detectors, errors)
         else:
             _note_optional(errors, "detectors", detector_error)
             for project in progress.items(projects):
@@ -251,17 +251,34 @@ def _default_team_role(member: dict[str, Any]) -> str | None:
     return None
 
 
-def _attach_detectors(projects: list[dict[str, Any]], detectors: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Attach detectors to their projects and return the org-level ones, such as the all-projects detector."""
+def _attach_detectors(
+    projects: list[dict[str, Any]], detectors: list[dict[str, Any]], errors: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Attach detectors to their projects and return the org-level ones, such as the all-projects detector.
+
+    A detector whose project was not read cannot be copied, so it is reported instead.
+    """
     by_id = {project["id"]: project for project in projects if project.get("id")}
     org_level = []
+    unread: dict[str, list[str]] = {}
     for detector in detectors:
         if not detector.get("projectId"):
             org_level.append(detector)
             continue
         project = by_id.get(str(detector["projectId"]))
-        if project is not None:
+        if project is None:
+            unread.setdefault(str(detector["projectId"]), []).append(str(detector.get("name") or detector.get("id")))
+        else:
             project["detectors"].append(detector)
+    for project_id, names in unread.items():
+        shown = ", ".join(names[:3]) + (f", and {len(names) - 3} more" if len(names) > 3 else "")
+        errors.append(
+            {
+                "step": f"monitors in project {project_id}",
+                "status": 0,
+                "detail": f"the project was not read, so these monitors were not copied ({len(names)}): {shown}",
+            }
+        )
     return org_level
 
 
