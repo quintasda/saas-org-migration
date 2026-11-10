@@ -8,6 +8,7 @@ import os
 import sys
 
 from org_copy.apply import ApplyOptions, apply_snapshot
+from org_copy.checkpoint import render_checkpoint
 from org_copy.checklist import render_checklist
 from org_copy.client import ApiError, SentryClient
 from org_copy.export import export_snapshot
@@ -127,7 +128,7 @@ def _guided() -> int:
         print(f"\nPlan only. Nothing was written to {dest_org}. Details are in {args.checklist}.", file=sys.stderr)
         return planned
     args.send_invites = _confirm("Email invites to the source members now?")
-    if not _confirm(f"Write the changes above to {dest_org}?"):
+    if not _confirm(f"Do the numbers above look right? Write the changes to {dest_org}?"):
         print(f"Stopped. Nothing was written to {dest_org}.", file=sys.stderr)
         return 1
     print(file=sys.stderr)
@@ -199,6 +200,8 @@ def _plan(args: argparse.Namespace, org: str, token: str) -> int:
         print(f"note: {note}")
     for failure in report.failures:
         print(f"fail: {failure['step']}: {failure['detail']}", file=sys.stderr)
+    source_org = (snapshot.get("source") or {}).get("org") or "Source"
+    print("\n" + render_checkpoint(snapshot, report, source_org, org), file=sys.stderr, end="")
     return 0 if report.ok else 1
 
 

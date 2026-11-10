@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any
@@ -53,6 +53,56 @@ class ApplyOptions:
 
 
 @dataclass
+class SectionResult:
+    label: str
+    # What the section did, such as "30 created, 120 related changes".
+    summary: str
+    actions: list[str] = field(default_factory=list)
+    failures: list[dict[str, str]] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class ObjectKind:
+    """One kind of object, such as projects, for counting a section by object."""
+
+    label: str
+    section: str
+    # How the Sink summaries and failure steps for this kind start.
+    prefixes: tuple[str, ...]
+    count: Callable[[dict[str, Any]], int]
+
+
+def _count(key: str) -> Callable[[dict[str, Any]], int]:
+    return lambda snapshot: len(snapshot.get(key) or [])
+
+
+OBJECT_KINDS = (
+    ObjectKind("Teams", "Teams", ("team ",), _count("teams")),
+    ObjectKind("Projects", "Projects", ("project ",), _count("projects")),
+    ObjectKind("Data forwarders", "Data forwarders", ("forwarder ",), _count("forwarders")),
+    ObjectKind("Cron monitors", "Cron monitors", ("cron monitor ",), _count("monitors")),
+    ObjectKind("Monitors", "Monitors", ("detector ",), lambda snapshot: len(_iter_detectors(snapshot))),
+    ObjectKind("Alerts", "Alerts", ("workflow ",), _count("workflows")),
+    ObjectKind(
+        "Legacy alert rules",
+        "Legacy alert rules",
+        ("issue rule ", "metric alert "),
+        lambda snapshot: len(snapshot.get("alertRules") or [])
+        + sum(len(project.get("rules") or []) for project in snapshot.get("projects") or []),
+    ),
+    ObjectKind("Dashboards", "Dashboards", ("dashboard ",), _count("dashboards")),
+    ObjectKind("Saved queries", "Saved queries and recent searches", ("saved query ",), _count("savedQueries")),
+    ObjectKind("Recent searches", "Saved queries and recent searches", ("recent search ",), _count("recentSearches")),
+    ObjectKind(
+        "Issue views",
+        "Issue views",
+        ("issue view ",),
+        lambda snapshot: len((snapshot.get("issueViews") or {}).get("mine") or []),
+    ),
+)
+
+
+@dataclass
 class ApplyReport:
     actions: list[str] = field(default_factory=list)
     failures: list[dict[str, str]] = field(default_factory=list)
@@ -61,8 +111,7 @@ class ApplyReport:
     rejected_org_fields: list[str] = field(default_factory=list)
     rejected_project_options: list[dict[str, str]] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
-    # (section, result) for each section, such as ("Projects", "3 created, 7 updated").
-    sections: list[tuple[str, str]] = field(default_factory=list)
+    sections: list[SectionResult] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
@@ -75,8 +124,11 @@ class Sink:
         self.report = report
         self.dry_run = dry_run
         self._seq = 0
+        # Summaries created in this run, to tell duplicates in the source from objects already there.
+        self._created: set[str] = set()
 
     def post(self, path: str, body: dict[str, Any], summary: str) -> dict[str, Any]:
+        self._created.add(summary)
         if self.dry_run:
             self.report.actions.append(f"create {summary}")
             self._seq += 1
@@ -101,6 +153,9 @@ class Sink:
         return result
 
     def skip(self, summary: str) -> None:
+        """Record an object that is not created. A reason in parentheses means it is not copied."""
+        if summary in self._created:
+            summary += " (duplicate of another in the source)"
         self.report.actions.append(f"skip {summary}")
 
 
@@ -175,30 +230,56 @@ def apply_snapshot(
     return report
 
 
-# How each Sink verb reads in a section summary.
+@contextmanager
+def _section(progress: Progress, report: ApplyReport, label: str) -> Iterator[None]:
+    """Run one apply section and summarize the actions and failures it added."""
+    start_actions, start_failures = len(report.actions), len(report.failures)
+    with progress.section(label) as summary:
+        yield
+        actions = report.actions[start_actions:]
+        failures = report.failures[start_failures:]
+        summary.extend(_summarize_actions(actions, failures, _section_prefixes(label)))
+        report.sections.append(SectionResult(label, ", ".join(summary), actions, failures))
+
+
+def _section_prefixes(label: str) -> tuple[str, ...]:
+    return tuple(prefix for kind in OBJECT_KINDS if kind.section == label for prefix in kind.prefixes)
+
+
+def action_outcome(action: str) -> str:
+    """Name what an action does to its object: create, created, update, updated, existing, or not copied."""
+    verb, _, rest = action.partition(" ")
+    if verb != "skip":
+        return verb
+    return "not copied" if rest.endswith(")") else "existing"
+
+
+# How each outcome reads in a section summary.
 _SUMMARY_WORDS = {
     "create": "to create",
     "created": "created",
     "update": "to update",
     "updated": "updated",
-    "skip": "skipped",
+    "existing": "already there",
+    "not copied": "not copied",
 }
 
 
-@contextmanager
-def _section(progress: Progress, report: ApplyReport, label: str) -> Iterator[None]:
-    """Run one apply section and summarize the actions and failures it added."""
-    actions, failures = len(report.actions), len(report.failures)
-    with progress.section(label) as summary:
-        yield
-        verbs = Counter(action.split(" ", 1)[0] for action in report.actions[actions:])
-        summary.extend(f"{count} {_SUMMARY_WORDS.get(verb, verb)}" for verb, count in verbs.items())
-        failed = len(report.failures) - failures
-        if failed:
-            summary.append(f"{failed} failed")
-        if not summary:
-            summary.append("nothing to copy")
-        report.sections.append((label, ", ".join(summary)))
+def _summarize_actions(actions: list[str], failures: list[dict[str, str]], prefixes: tuple[str, ...]) -> list[str]:
+    """Count the section's objects by outcome. Other actions, such as project keys, count as related changes."""
+    outcomes: Counter[str] = Counter()
+    related = 0
+    for action in actions:
+        if prefixes and not action.partition(" ")[2].startswith(prefixes):
+            related += 1
+        else:
+            outcomes[action_outcome(action)] += 1
+    summary = [f"{count} {_SUMMARY_WORDS.get(outcome, outcome)}" for outcome, count in outcomes.items()]
+    if related:
+        summary.append(f"{related} related changes")
+    if failures:
+        summary.append(f"{len(failures)} failed")
+    return summary or ["nothing to copy"]
 
 
 class _DestIndex:
@@ -778,8 +859,10 @@ def _apply_detectors(
             existing = _existing_dest_detector(detector, dest, project_map)
             if existing:
                 detector_map[source_id] = str(existing.get("id"))
+                sink.skip(f"detector {name} on {slug} (built in, the destination has its own)")
             elif sink.dry_run and _planned(detector, dest, project_map):
                 detector_map[source_id] = f"{kind} on {slug}"
+                sink.skip(f"detector {name} on {slug} (built in, the new project gets its own)")
             else:
                 report.failures.append(
                     {
@@ -825,6 +908,7 @@ def _apply_workflows(
     for workflow in progress.items(snapshot.get("workflows") or []):
         name = workflow.get("name")
         if not name:
+            sink.skip("workflow (no name)")
             continue
         unmapped = [str(item) for item in workflow.get("detectorIds") or [] if str(item) not in detector_map]
         if unmapped:
@@ -873,7 +957,7 @@ def _apply_legacy_rules(
             if not name or not slug:
                 continue
             if name in workflow_names:
-                sink.skip(f"issue rule {name} on {slug} (workflow with the same name)")
+                sink.skip(f"issue rule {name} on {slug} (copied as the alert with the same name)")
                 continue
             if dest.rules_by_key.get(f"{slug}:{name}"):
                 sink.skip(f"issue rule {name} on {slug}")
@@ -918,7 +1002,7 @@ def _apply_metric_rules(
         if not name:
             continue
         if name in workflow_names:
-            sink.skip(f"metric alert {name} (workflow with the same name)")
+            sink.skip(f"metric alert {name} (copied as the alert with the same name)")
             continue
         if dest.alert_rules_by_name.get(name):
             sink.skip(f"metric alert {name}")
@@ -997,7 +1081,7 @@ def _apply_dashboards(
     org = sink.client.org
     for dashboard in progress.items(snapshot.get("dashboards") or []):
         if dashboard.get("prebuiltId"):
-            sink.skip(f"prebuilt dashboard {dashboard.get('title')}")
+            sink.skip(f"dashboard {dashboard.get('title')} (prebuilt, the destination has its own)")
             continue
         title = dashboard.get("title")
         if not title:

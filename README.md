@@ -101,12 +101,14 @@ org-copy
 
 Then it offers two options:
 
-- **Start migration** copies everything from start to finish. It reads the source, shows the changes it will make to the destination, asks whether to email invites to the source members, and asks you to confirm before it writes anything. When it finishes, open `manual-checklist.md` and start with **Review the destination**.
+- **Start migration** copies everything from start to finish. It reads the source, shows the changes it will make to the destination, asks whether to email invites to the source members, and asks you to confirm the check table before it writes anything. When it finishes, open `manual-checklist.md` and start with **Review the destination**.
 - **Plan** changes nothing in either org. It reads the source and prints what Start migration would copy to the destination. Use it first to check the source configuration.
 
 Both options write the local files listed under Output files. Plan does not write `dsn-map.json`.
 
 While it runs, org-copy shows each section as it reads or writes it, such as teams, projects, alerts, and dashboards, and what the section found or changed. Long sections count up as they go, for example `Projects... 37/200`.
+
+Before anything is written, plan prints a check table. For each kind of object, such as teams, projects, monitors, alerts, and dashboards, it shows how many the source has, how many will be created, how many are already in the destination, and how many will not be copied, with the reason: built in, prebuilt, a duplicate of another in the source, or failed. Start migration then asks you to confirm the numbers before it writes. Section lines count objects too, so `Projects: 12 to create, 80 related changes` means 12 projects plus their keys, settings, filters, and team links.
 
 When apply finishes, it prints a summary: what each section migrated, every step that went wrong, and what is left to do by hand, such as invites, alert actions that need an integration, settings the API did not accept, and the new DSNs. `manual-checklist.md` has the same lists, plus the source counts to compare.
 

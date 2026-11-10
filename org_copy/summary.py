@@ -10,7 +10,7 @@ from org_copy.checklist import team_admins_to_set
 
 def render_summary(snapshot: dict[str, Any], report: ApplyReport, dest_org: str) -> str:
     lines = [f"Summary for {dest_org}", "", "Migrated:"]
-    lines.extend(f"  {label}: {result}" for label, result in report.sections)
+    lines.extend(f"  {section.label}: {section.summary}" for section in report.sections)
 
     failures = [f"Reading the source, {item.get('step')}: {item.get('detail')}" for item in snapshot.get("exportErrors") or []]
     failures.extend(f"{item.get('step')}: {item.get('detail')}" for item in report.failures)

@@ -17,7 +17,8 @@ import httpx
 from org_copy import cli
 from org_copy.cli import main
 from org_copy.client import SentryClient, next_link
-from org_copy.apply import ApplyReport
+from org_copy.apply import ApplyReport, SectionResult, Sink
+from org_copy.checkpoint import render_checkpoint
 from org_copy.progress import Progress
 from org_copy.summary import render_summary
 from tests.fake_sentry import FakeSentry, MemoryOrg, seed
@@ -325,7 +326,7 @@ class GuidedTests(unittest.TestCase):
             "Destination host [https://de.sentry.io]: ": "",
             "Choose 1 or 2: ": choice,
             "Email invites to the source members now? [y/N]: ": invites,
-            "Write the changes above to sana-de? [y/N]: ": write,
+            "Do the numbers above look right? Write the changes to sana-de? [y/N]: ": write,
         }
         previous = os.getcwd()
         work = tempfile.TemporaryDirectory()
@@ -356,7 +357,11 @@ class GuidedTests(unittest.TestCase):
         self.assertEqual([call for call in dest.calls if call[0] != "GET"], [])
         self.assertIn("Nothing was written to sana-de", err)
         self.assertIn("  [12/12] Integrations, apps, and auth tokens: done", err)
-        self.assertIn("  [5/13] Projects: 4 to create, 7 to update", err)
+        self.assertIn("  [5/13] Projects: 2 to create, 9 related changes", err)
+        self.assertIn("  [8/13] Monitors: 2 to create, 4 not copied", err)
+        self.assertIn("Check before writing to sana-de", err)
+        self.assertIn("  Monitors                6          2              0           4\n", err)
+        self.assertIn("  Dashboards: 1 prebuilt, the destination has its own", err)
         self.assertIn("  [13/13] Issue views: 1 to create", err)
 
     def test_start_migration_runs_end_to_end(self) -> None:
@@ -365,7 +370,7 @@ class GuidedTests(unittest.TestCase):
         self.assertEqual(sorted(dest.projects), ["api", "web"])
         self.assertFalse([call for call in dest.calls if call[0] == "POST" and call[1].endswith("/members/")])
         self.assertIn("Writing to sana-de", err)
-        self.assertIn("  [5/13] Projects: 3 created, 7 updated", err)
+        self.assertIn("  [5/13] Projects: 2 created, 8 related changes", err)
         self.assertIn("  [13/13] Issue views: 1 created", err)
         summary = err[err.index("Summary for sana-de") :]
         self.assertIn("Migrated:\n  Organization settings: 1 updated\n  Teams: 1 created\n", summary)
@@ -387,7 +392,7 @@ class SummaryTests(unittest.TestCase):
     def test_lists_failures_from_export_and_apply(self) -> None:
         report = ApplyReport(
             failures=[{"step": "project web", "detail": "403 forbidden"}],
-            sections=[("Projects", "1 created, 1 failed")],
+            sections=[SectionResult("Projects", "1 created, 1 failed")],
         )
         snapshot = {"exportErrors": [{"step": "dashboards", "detail": "404"}]}
         text = render_summary(snapshot, report, "sana-de")
@@ -396,6 +401,43 @@ class SummaryTests(unittest.TestCase):
             "Went wrong (2):\n  - Reading the source, dashboards: 404\n  - project web: 403 forbidden\n", text
         )
         self.assertIn("Still to do: nothing.", text)
+
+
+class CheckpointTests(unittest.TestCase):
+    def test_explains_every_alert_that_is_not_created(self) -> None:
+        actions = [
+            "create workflow Errors",
+            "skip workflow Errors (duplicate of another in the source)",
+            "skip workflow Latency",
+            "create detector Slow on api",
+        ]
+        report = ApplyReport(
+            sections=[
+                SectionResult("Alerts", "", actions, [{"step": "workflow Crons", "detail": "monitor was not copied"}])
+            ]
+        )
+        snapshot = {"workflows": [{}] * 5}
+        text = render_checkpoint(snapshot, report, "src-org", "dest-org")
+        self.assertIn("  Alerts       5          1              1           3\n", text)
+        self.assertIn("  Alerts: 1 duplicate of another in the source\n", text)
+        self.assertIn("  Alerts: 1 failed, listed under Went wrong\n", text)
+        self.assertIn("  Alerts: 1 not in the plan, such as an entry with no name\n", text)
+
+
+    def test_sink_tells_duplicates_from_objects_already_there(self) -> None:
+        report = ApplyReport()
+        sink = Sink(None, report, dry_run=True)  # type: ignore[arg-type]
+        sink.post("/organizations/dest-org/dashboards/", {"title": "Errors"}, "dashboard Errors")
+        sink.skip("dashboard Errors")
+        sink.skip("dashboard Latency")
+        self.assertEqual(
+            report.actions,
+            [
+                "create dashboard Errors",
+                "skip dashboard Errors (duplicate of another in the source)",
+                "skip dashboard Latency",
+            ],
+        )
 
 
 class TerminalStream(StringIO):
