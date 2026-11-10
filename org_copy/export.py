@@ -67,16 +67,12 @@ def export_snapshot(client: SentryClient) -> dict[str, Any]:
     with progress.section("Dashboards") as summary:
         dashboards = _export_dashboards(client, org, errors, progress)
         summary.append(f"{len(dashboards)} found")
-    with progress.section("Saved queries and recent searches") as summary:
+    with progress.section("Saved queries") as summary:
         saved_queries, query_error = client.get_optional_list(
             f"/organizations/{org}/discover/saved/", LIST_PARAMS
         )
         _note_optional(errors, "saved queries", query_error)
-        recent_searches, recent_error = client.get_optional_list(
-            f"/organizations/{org}/recent-searches/", LIST_PARAMS
-        )
-        _note_optional(errors, "recent searches", recent_error)
-        summary.append(f"{len(saved_queries) + len(recent_searches)} found")
+        summary.append(f"{len(saved_queries)} found")
     with progress.section("Issue views") as summary:
         my_views, my_error = client.get_optional_list(
             f"/organizations/{org}/group-search-views/",
@@ -119,11 +115,6 @@ def export_snapshot(client: SentryClient) -> dict[str, Any]:
         "monitors": monitors,
         "dashboards": dashboards,
         "savedQueries": saved_queries,
-        "recentSearches": [
-            {"id": str(item.get("id") or ""), "type": item.get("type", 0), "query": item.get("query") or ""}
-            for item in recent_searches
-            if isinstance(item, dict) and item.get("query")
-        ],
         "issueViews": {"mine": my_views, "others": other_views},
         "forwarders": forwarders,
         "integrations": [_public_integration(item) for item in integrations],

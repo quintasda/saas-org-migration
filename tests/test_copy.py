@@ -175,8 +175,6 @@ class CopyTests(unittest.TestCase):
         self.assertEqual(len(dest.dashboards), 1)
         self.assertEqual(dest.queries[0]["projects"], [int(project["id"])])
         self.assertEqual(dest.queries[0]["version"], 2)
-        self.assertEqual(len(dest.recent_searches), 1)
-        self.assertEqual(dest.recent_searches[0]["query"], "is:unresolved level:error")
         self.assertEqual([view["name"] for view in dest.views], ["Prod errors"])
         self.assertEqual(dest.forwarders[0]["config"]["token"], "super-secret-splunk-token")
         self.assertEqual(dest.forwarders[0]["project_ids"], [int(project["id"])])

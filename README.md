@@ -60,7 +60,7 @@ Do not commit the tokens. They cannot be passed as command-line flags, so they s
 - Cron monitors
 - Uptime monitors. Auto-detected uptime monitors become manual ones, because the API only creates manual monitors.
 - Custom dashboards. Prebuilt dashboards are skipped.
-- Discover saved queries and recent searches
+- Discover saved queries
 - Issue views that belong to the token user
 - Data forwarders, including their configuration
 
@@ -75,6 +75,7 @@ Do not commit the tokens. They cannot be passed as command-line flags, so they s
 - Hidden environments, until events create them
 - Replay access, until invited members accept
 - Past events, issue history, replays, logs, and audit history
+- Recent searches. Sentry only returns the token's own.
 
 Switch SDK DSNs last, after alerts in the destination organization are working. New DSNs are written to `dsn-map.json`.
 

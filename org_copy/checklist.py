@@ -185,6 +185,7 @@ def _section_gaps(lines: list[str]) -> None:
             "- Uptime monitors fail to create when the destination has no uptime seats left.",
             "- Auto-detected uptime monitors are created as manual monitors.",
             "- Two metric monitors with the same name in one project are copied as one.",
+            "- Recent searches are not copied. Sentry only returns the token's own, so each person's start empty.",
             "",
         ]
     )

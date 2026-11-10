@@ -90,16 +90,7 @@ OBJECT_KINDS = (
     ),
     ObjectKind("Alerts", "Alerts", ("workflow ",), _count("workflows"), "same name and monitors"),
     ObjectKind("Dashboards", "Dashboards", ("dashboard ",), _count("dashboards"), "same title"),
-    ObjectKind(
-        "Saved queries", "Saved queries and recent searches", ("saved query ",), _count("savedQueries"), "same name"
-    ),
-    ObjectKind(
-        "Recent searches",
-        "Saved queries and recent searches",
-        ("recent search ",),
-        _count("recentSearches"),
-        "same query",
-    ),
+    ObjectKind("Saved queries", "Saved queries", ("saved query ",), _count("savedQueries"), "same name"),
     ObjectKind(
         "Issue views",
         "Issue views",
@@ -214,9 +205,8 @@ def apply_snapshot(
         _apply_workflows(snapshot, sink, dest, state, state_path, options, team_map, user_map, detector_map, report, progress)
     with _section(progress, report, "Dashboards"):
         _apply_dashboards(snapshot, sink, dest, state, state_path, options, team_map, project_map, report, progress)
-    with _section(progress, report, "Saved queries and recent searches"):
+    with _section(progress, report, "Saved queries"):
         _apply_queries(snapshot, sink, dest, state, state_path, options, project_map, report)
-        _apply_recent_searches(snapshot, sink, dest, report)
     with _section(progress, report, "Issue views"):
         _apply_views(snapshot, sink, dest, state, state_path, options, project_map, report)
     if options.send_invites:
@@ -303,7 +293,6 @@ class _DestIndex:
         self.monitors_by_slug: dict[str, dict[str, Any]] = {}
         self.dashboards_by_title: dict[str, dict[str, Any]] = {}
         self.queries_by_name: dict[str, dict[str, Any]] = {}
-        self.recent_searches: list[dict[str, Any]] = []
         self.views_by_name: dict[str, dict[str, Any]] = {}
         self.forwarders_by_provider: dict[str, dict[str, Any]] = {}
         self.detectors: list[dict[str, Any]] = []
@@ -339,10 +328,6 @@ class _DestIndex:
         )
         index.dashboards_by_title = _by(client, f"/organizations/{client.org}/dashboards/", "title", report, "dashboards")
         index.queries_by_name = _by(client, f"/organizations/{client.org}/discover/saved/", "name", report, "saved queries")
-        recent, recent_error = client.get_optional_list(f"/organizations/{client.org}/recent-searches/", LIST_PARAMS)
-        if recent_error and recent_error.status != 404:
-            report.failures.append({"step": "list destination recent searches", "detail": error_text(recent_error)})
-        index.recent_searches = recent
         views, view_error = client.get_optional_list(
             f"/organizations/{client.org}/group-search-views/",
             {"createdBy": "me", **LIST_PARAMS},
@@ -1044,30 +1029,6 @@ def _apply_queries(
             continue
         dest.queries_by_name[name] = created
         _remember(state, "queries", query.get("id"), created.get("id"), state_path, options.dry_run)
-
-
-def _apply_recent_searches(snapshot: dict[str, Any], sink: Sink, dest: _DestIndex, report: ApplyReport) -> None:
-    org = sink.client.org
-    seen = {(item.get("type", 0), item.get("query")) for item in dest.recent_searches}
-    for search in snapshot.get("recentSearches") or []:
-        query = search.get("query")
-        if not query:
-            continue
-        kind = search.get("type", 0)
-        if (kind, query) in seen:
-            sink.skip(f"recent search {query}")
-            continue
-        try:
-            created = sink.post(
-                f"/organizations/{org}/recent-searches/",
-                {"type": kind, "query": query},
-                f"recent search {query}",
-            )
-        except ApiError as exc:
-            _fail(report, f"recent search {query}", exc)
-            continue
-        dest.recent_searches.append(created if isinstance(created, dict) else {"type": kind, "query": query})
-        seen.add((kind, query))
 
 
 def _apply_views(

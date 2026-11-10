@@ -35,7 +35,6 @@ class MemoryOrg:
         self.org_detectors: list[dict[str, Any]] = []
         self.dashboards: list[dict[str, Any]] = []
         self.queries: list[dict[str, Any]] = []
-        self.recent_searches: list[dict[str, Any]] = []
         self.views: list[dict[str, Any]] = []
         self.forwarders: list[dict[str, Any]] = []
         self.integrations: list[dict[str, Any]] = []
@@ -118,8 +117,6 @@ class FakeSentry:
             return self._collection(org.dashboards, method, body, id_field="title")
         if path == f"/organizations/{slug}/discover/saved/":
             return self._collection(org.queries, method, body)
-        if path == f"/organizations/{slug}/recent-searches/":
-            return self._collection(org.recent_searches, method, body)
         if path == f"/organizations/{slug}/group-search-views/":
             return self._views(org, method, body, params.get("createdBy"))
         if path == f"/organizations/{slug}/forwarding/":
@@ -669,7 +666,6 @@ def seed() -> FakeSentry:
             "version": 2,
         }
     )
-    source.recent_searches.append({"id": "rs1", "type": 0, "query": "is:unresolved level:error"})
     source.views.extend(
         [
             {
