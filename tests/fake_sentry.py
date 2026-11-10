@@ -35,6 +35,7 @@ class MemoryOrg:
         self.org_detectors: list[dict[str, Any]] = []
         self.dashboards: list[dict[str, Any]] = []
         self.queries: list[dict[str, Any]] = []
+        self.invite_requests: list[dict[str, Any]] = []
         self.explore_queries: list[dict[str, Any]] = []
         self.views: list[dict[str, Any]] = []
         self.forwarders: list[dict[str, Any]] = []
@@ -98,6 +99,8 @@ class FakeSentry:
             return self._organization(org, method, body)
         if path == f"/organizations/{slug}/teams/":
             return self._teams(org, method, body)
+        if path == f"/organizations/{slug}/invite-requests/":
+            return _ok(org.invite_requests)
         if path == f"/organizations/{slug}/members/":
             return self._members(org, method, body)
         if path == f"/organizations/{slug}/projects/":
@@ -668,6 +671,9 @@ def seed() -> FakeSentry:
             "queryDataset": "transaction-like",
             "version": 2,
         }
+    )
+    source.invite_requests.append(
+        {"id": "ir1", "email": "pending@example.com", "orgRole": "member", "inviteStatus": "requested_to_join"}
     )
     source.explore_queries.extend(
         [

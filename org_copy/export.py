@@ -27,6 +27,11 @@ def export_snapshot(client: SentryClient) -> dict[str, Any]:
     with progress.section("Members") as summary:
         members = _required_list(client, f"/organizations/{org}/members/", LIST_PARAMS, "members", errors)
         summary.append(f"{len(members)} found")
+        # The members list leaves out people whose invite or join request still waits for approval.
+        requests, request_error = client.get_optional_list(f"/organizations/{org}/invite-requests/", LIST_PARAMS)
+        _note_optional(errors, "invite requests", request_error)
+        if requests:
+            summary.append(f"{len(requests)} waiting for approval")
     with progress.section("Teams") as summary:
         teams = _required_list(client, f"/organizations/{org}/teams/", {"detailed": "0", **LIST_PARAMS}, "teams", errors)
         _attach_team_memberships(client, org, progress.items(teams), members, errors)
@@ -126,6 +131,15 @@ def export_snapshot(client: SentryClient) -> dict[str, Any]:
         "sentryAppInstallations": [_public_installation(item) for item in installations],
         "authTokens": auth_tokens,
         "authProvider": auth_provider if isinstance(auth_provider, dict) else None,
+        "inviteRequests": [
+            {
+                "email": item.get("email"),
+                "role": item.get("orgRole") or item.get("role"),
+                "inviteStatus": item.get("inviteStatus"),
+            }
+            for item in requests
+            if isinstance(item, dict) and item.get("email")
+        ],
         "exportErrors": errors,
     }
 

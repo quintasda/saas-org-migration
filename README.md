@@ -76,6 +76,7 @@ Do not commit the tokens. They cannot be passed as command-line flags, so they s
 - Replay access, until invited members accept
 - Past events, issue history, replays, logs, and audit history
 - Recent searches. Sentry only returns the token's own.
+- Invite and join requests that wait for approval in the source. The checklist lists them under People.
 
 Switch SDK DSNs last, after alerts in the destination organization are working. New DSNs are written to `dsn-map.json`.
 

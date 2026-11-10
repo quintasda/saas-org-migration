@@ -93,6 +93,8 @@ class CopyTests(unittest.TestCase):
             self.assertIn("saml2", checklist)
             self.assertIn("CI Upload", checklist)
             self.assertIn("staging", checklist)
+            self.assertIn("Waiting for approval in the source", checklist)
+            self.assertIn("- pending@example.com role `member`", checklist)
             self.assertEqual(stat.S_IMODE(os.stat("snapshot.json").st_mode), 0o600)
 
             dest = fake.orgs[("de.sentry.io", "sana-de")]

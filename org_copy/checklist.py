@@ -326,6 +326,16 @@ def _section_members(lines: list[str], snapshot: dict[str, Any]) -> None:
     for member in snapshot.get("members") or []:
         teams = ", ".join(member.get("teamSlugs") or []) or "no teams"
         lines.append(f"- {member_email(member)} role `{member.get('orgRole')}` teams: {teams}")
+    requests = snapshot.get("inviteRequests") or []
+    if requests:
+        lines.extend(
+            [
+                "",
+                "Waiting for approval in the source, so not invited. Approve them in the source and export again, "
+                "or invite them in the destination:",
+            ]
+        )
+        lines.extend(f"- {item.get('email')} role `{item.get('role')}`" for item in requests)
     lines.append("")
 
 
