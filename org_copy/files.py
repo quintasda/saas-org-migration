@@ -41,8 +41,6 @@ def empty_state() -> dict[str, Any]:
         "projects": {},
         "detectors": {},
         "workflows": {},
-        "rules": {},
-        "alertRules": {},
         "monitors": {},
         "dashboards": {},
         "queries": {},

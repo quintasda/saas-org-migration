@@ -59,11 +59,7 @@ def export_snapshot(client: SentryClient) -> dict[str, Any]:
     with progress.section("Alerts") as summary:
         workflows, workflow_error = client.get_optional_list(f"/organizations/{org}/workflows/", ALL_PROJECTS)
         _note_optional(errors, "workflows", workflow_error)
-        alert_rules, alert_error = client.get_optional_list(f"/organizations/{org}/alert-rules/", LIST_PARAMS)
-        _note_optional(errors, "alert-rules", alert_error)
         summary.append(f"{len(workflows)} found")
-        if alert_rules:
-            summary.append(f"{len(alert_rules)} legacy")
     with progress.section("Cron monitors") as summary:
         monitors, monitor_error = client.get_optional_list(f"/organizations/{org}/monitors/", ALL_PROJECTS)
         _note_optional(errors, "monitors", monitor_error)
@@ -120,7 +116,6 @@ def export_snapshot(client: SentryClient) -> dict[str, Any]:
         "projects": projects,
         "orgDetectors": org_detectors,
         "workflows": workflows,
-        "alertRules": alert_rules,
         "monitors": monitors,
         "dashboards": dashboards,
         "savedQueries": saved_queries,
@@ -162,8 +157,6 @@ def _export_project(
         f"/projects/{org}/{slug}/environments/", {"visibility": "all"}
     )
     _note_optional(errors, f"environments {slug}", env_error)
-    rules, rule_error = client.get_optional_list(f"/projects/{org}/{slug}/rules/")
-    _note_optional(errors, f"rules {slug}", rule_error)
     codeowners, owner_error = client.get_optional_list(f"/projects/{org}/{slug}/codeowners/")
     if owner_error and owner_error.status != 404:
         _note_optional(errors, f"codeowners {slug}", owner_error)
@@ -186,7 +179,6 @@ def _export_project(
         "hiddenEnvironments": [
             env.get("name") for env in environments if isinstance(env, dict) and env.get("isHidden") and env.get("name")
         ],
-        "rules": rules,
         "codeowners": codeowners,
         "serviceHooks": [_public_hook(hook) for hook in hooks],
         "latestRelease": latest.get("version"),

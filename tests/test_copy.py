@@ -169,10 +169,6 @@ class CopyTests(unittest.TestCase):
         self.assertTrue(all(action["type"] == "email" for action in actions))
         team_action = next(action for action in actions if action["config"]["targetType"] == "team")
         self.assertEqual(team_action["config"]["targetIdentifier"], dest.teams["backend"]["id"])
-        self.assertEqual(len(project["rules"]), 1)
-        self.assertEqual(project["rules"][0]["name"], "After hours")
-        self.assertEqual(dest.alert_rules[0]["projects"], ["api"])
-        self.assertNotIn("slack", json.dumps(dest.alert_rules[0]["triggers"]).lower())
         self.assertEqual(dest.monitors[0]["slug"], "nightly")
         self.assertEqual(dest.dashboards[0]["title"], "Overview")
         self.assertEqual(dest.dashboards[0]["projects"], [int(project["id"])])
@@ -357,10 +353,10 @@ class GuidedTests(unittest.TestCase):
         self.assertEqual([call for call in dest.calls if call[0] != "GET"], [])
         self.assertIn("Nothing was written to sana-de", err)
         self.assertIn("  [12/12] Integrations, apps, and auth tokens: done", err)
-        self.assertIn("  [5/13] Projects: 2 to create, 9 related changes", err)
-        self.assertIn("  [8/13] Monitors: 2 to create, 4 not copied", err)
+        self.assertIn("  [5/12] Projects: 2 to create, 9 related changes", err)
+        self.assertIn("  [8/12] Monitors: 2 to create, 4 not copied", err)
         self.assertIn("Check before writing to sana-de", err)
-        self.assertIn("  Monitors                6          2              0           4\n", err)
+        self.assertIn("  Monitors             6          2              0           4\n", err)
         self.assertIn(
             "Why the numbers differ:\n"
             "  Monitors: 6 in sana-us, 2 to create\n"
@@ -368,7 +364,7 @@ class GuidedTests(unittest.TestCase):
             err,
         )
         self.assertIn("  Dashboards: 2 in sana-us, 1 to create\n    1 prebuilt, the destination has its own: Prebuilt\n", err)
-        self.assertIn("  [13/13] Issue views: 1 to create", err)
+        self.assertIn("  [12/12] Issue views: 1 to create", err)
 
     def test_start_migration_runs_end_to_end(self) -> None:
         code, dest, err = self._guided("1")
@@ -376,8 +372,8 @@ class GuidedTests(unittest.TestCase):
         self.assertEqual(sorted(dest.projects), ["api", "web"])
         self.assertFalse([call for call in dest.calls if call[0] == "POST" and call[1].endswith("/members/")])
         self.assertIn("Writing to sana-de", err)
-        self.assertIn("  [5/13] Projects: 2 created, 8 related changes", err)
-        self.assertIn("  [13/13] Issue views: 1 created", err)
+        self.assertIn("  [5/12] Projects: 2 created, 8 related changes", err)
+        self.assertIn("  [12/12] Issue views: 1 created", err)
         summary = err[err.index("Summary for sana-de") :]
         self.assertIn("Migrated:\n  Organization settings: 1 updated\n  Teams: 1 created\n", summary)
         self.assertIn("Went wrong: nothing.", summary)

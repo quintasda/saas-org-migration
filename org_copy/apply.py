@@ -16,13 +16,11 @@ from org_copy.redact import error_text
 from org_copy.remap import (
     PROJECT_OPTION_KEYS,
     build_user_map,
-    classic_rule_body,
     dashboard_body,
     detector_create_body,
     fields_to_drop,
     issue_view_body,
     member_email,
-    metric_rule_body,
     optional_org_body,
     org_settings_body,
     project_settings_body,
@@ -40,7 +38,7 @@ CREATED_DETECTOR_TYPES = {
 }
 CRON_DETECTOR_TYPE = "monitor_check_in_failure"
 # Sections apply_snapshot always runs, including Reading the destination. The tests check [13/13].
-APPLY_SECTIONS = 13
+APPLY_SECTIONS = 12
 
 
 @dataclass
@@ -91,14 +89,6 @@ OBJECT_KINDS = (
         "same name in the same project",
     ),
     ObjectKind("Alerts", "Alerts", ("workflow ",), _count("workflows"), "same name and monitors"),
-    ObjectKind(
-        "Legacy alert rules",
-        "Legacy alert rules",
-        ("issue rule ", "metric alert "),
-        lambda snapshot: len(snapshot.get("alertRules") or [])
-        + sum(len(project.get("rules") or []) for project in snapshot.get("projects") or []),
-        "same name",
-    ),
     ObjectKind("Dashboards", "Dashboards", ("dashboard ",), _count("dashboards"), "same title"),
     ObjectKind(
         "Saved queries", "Saved queries and recent searches", ("saved query ",), _count("savedQueries"), "same name"
@@ -192,7 +182,7 @@ def apply_snapshot(
     optional = (options.send_invites, options.hide_environments, options.apply_replay_access)
     progress = Progress(title, APPLY_SECTIONS + sum(optional))
     with progress.section("Reading the destination") as summary:
-        dest = _DestIndex.load(client, report, progress)
+        dest = _DestIndex.load(client, report)
         if dest is None:
             summary.append("failed")
     if dest is None:
@@ -222,10 +212,6 @@ def apply_snapshot(
         )
     with _section(progress, report, "Alerts"):
         _apply_workflows(snapshot, sink, dest, state, state_path, options, team_map, user_map, detector_map, report, progress)
-    with _section(progress, report, "Legacy alert rules"):
-        names = {workflow.get("name") for workflow in snapshot.get("workflows") or []}
-        _apply_legacy_rules(snapshot, sink, dest, state, state_path, options, team_map, user_map, names, report)
-        _apply_metric_rules(snapshot, sink, dest, state, state_path, options, team_map, user_map, names, report)
     with _section(progress, report, "Dashboards"):
         _apply_dashboards(snapshot, sink, dest, state, state_path, options, team_map, project_map, report, progress)
     with _section(progress, report, "Saved queries and recent searches"):
@@ -320,13 +306,11 @@ class _DestIndex:
         self.recent_searches: list[dict[str, Any]] = []
         self.views_by_name: dict[str, dict[str, Any]] = {}
         self.forwarders_by_provider: dict[str, dict[str, Any]] = {}
-        self.alert_rules_by_name: dict[str, dict[str, Any]] = {}
         self.detectors: list[dict[str, Any]] = []
         self.detectors_by_key: dict[str, dict[str, Any]] = {}
-        self.rules_by_key: dict[str, dict[str, Any]] = {}
 
     @classmethod
-    def load(cls, client: SentryClient, report: ApplyReport, progress: Progress) -> _DestIndex | None:
+    def load(cls, client: SentryClient, report: ApplyReport) -> _DestIndex | None:
         index = cls()
         try:
             org = client.get_json(f"/organizations/{client.org}/")
@@ -370,15 +354,6 @@ class _DestIndex:
         if forward_error and forward_error.status != 404:
             report.failures.append({"step": "list destination forwarders", "detail": error_text(forward_error)})
         index.forwarders_by_provider = {item.get("provider"): item for item in forwarders if item.get("provider")}
-        index.alert_rules_by_name = _by(client, f"/organizations/{client.org}/alert-rules/", "name", report, "metric alerts")
-        for project in progress.items(index.projects_by_slug.values()):
-            slug = project.get("slug")
-            rules, rule_error = client.get_optional_list(f"/projects/{client.org}/{slug}/rules/")
-            if rule_error and rule_error.status != 404:
-                report.failures.append({"step": f"list rules {slug}", "detail": error_text(rule_error)})
-            for rule in rules:
-                if rule.get("name"):
-                    index.rules_by_key[f"{slug}:{rule['name']}"] = rule
         return index
 
     def load_detectors(self, client: SentryClient, report: ApplyReport) -> None:
@@ -959,89 +934,6 @@ def _apply_workflows(
             continue
         dest.workflow_keys.add(key)
         _remember(state, "workflows", workflow.get("id"), created.get("id"), state_path, options.dry_run)
-
-
-def _apply_legacy_rules(
-    snapshot: dict[str, Any],
-    sink: Sink,
-    dest: _DestIndex,
-    state: dict[str, Any],
-    state_path: str,
-    options: ApplyOptions,
-    team_map: dict[str, str],
-    user_map: dict[str, str],
-    workflow_names: set[Any],
-    report: ApplyReport,
-) -> None:
-    org = sink.client.org
-    for project in snapshot.get("projects") or []:
-        slug = project.get("slug")
-        for rule in project.get("rules") or []:
-            name = rule.get("name")
-            if not name or not slug:
-                continue
-            if name in workflow_names:
-                sink.skip(f"issue rule {name} on {slug}", "copied as the alert with the same name")
-                continue
-            if dest.rules_by_key.get(f"{slug}:{name}"):
-                sink.skip(f"issue rule {name} on {slug}")
-                continue
-            owner = remap_owner(rule.get("owner"), team_map, user_map)
-            body, dropped = classic_rule_body(rule, owner, user_map, team_map)
-            for action in dropped:
-                report.dropped_actions.append({"rule": name, "action": action})
-            try:
-                created = sink.post(f"/projects/{org}/{slug}/rules/", body, f"issue rule {name} on {slug}")
-            except ApiError as exc:
-                _fail(report, f"issue rule {name} on {slug}", exc)
-                continue
-            dest.rules_by_key[f"{slug}:{name}"] = created
-            _remember(state, "rules", rule.get("id"), created.get("id"), state_path, options.dry_run)
-
-
-def _metric_project_slugs(rule: dict[str, Any], snapshot: dict[str, Any]) -> list[str]:
-    wanted = {str(project_id) for project_id in rule.get("projects") or []}
-    slugs = []
-    for project in snapshot.get("projects") or []:
-        if str(project.get("id")) in wanted or project.get("slug") in wanted:
-            slugs.append(project["slug"])
-    return slugs
-
-
-def _apply_metric_rules(
-    snapshot: dict[str, Any],
-    sink: Sink,
-    dest: _DestIndex,
-    state: dict[str, Any],
-    state_path: str,
-    options: ApplyOptions,
-    team_map: dict[str, str],
-    user_map: dict[str, str],
-    workflow_names: set[Any],
-    report: ApplyReport,
-) -> None:
-    org = sink.client.org
-    for rule in snapshot.get("alertRules") or []:
-        name = rule.get("name")
-        if not name:
-            continue
-        if name in workflow_names:
-            sink.skip(f"metric alert {name}", "copied as the alert with the same name")
-            continue
-        if dest.alert_rules_by_name.get(name):
-            sink.skip(f"metric alert {name}")
-            continue
-        owner = remap_owner(rule.get("owner"), team_map, user_map)
-        body, dropped = metric_rule_body(rule, _metric_project_slugs(rule, snapshot), owner, user_map, team_map)
-        for action in dropped:
-            report.dropped_actions.append({"rule": name, "action": action})
-        try:
-            created = sink.post(f"/organizations/{org}/alert-rules/", body, f"metric alert {name}")
-        except ApiError as exc:
-            _fail(report, f"metric alert {name}", exc)
-            continue
-        dest.alert_rules_by_name[name] = created
-        _remember(state, "alertRules", rule.get("id"), created.get("id"), state_path, options.dry_run)
 
 
 def _apply_monitors(

@@ -31,7 +31,6 @@ class MemoryOrg:
         self.projects: dict[str, dict[str, Any]] = {}
         self.members: list[dict[str, Any]] = []
         self.workflows: list[dict[str, Any]] = []
-        self.alert_rules: list[dict[str, Any]] = []
         self.monitors: list[dict[str, Any]] = []
         self.org_detectors: list[dict[str, Any]] = []
         self.dashboards: list[dict[str, Any]] = []
@@ -111,8 +110,6 @@ class FakeSentry:
             return _ok([item for item in org.workflows if all_projects or item.get("detectorIds")])
         if path == f"/organizations/{slug}/workflows/":
             return self._collection(org.workflows, method, body)
-        if path == f"/organizations/{slug}/alert-rules/":
-            return self._collection(org.alert_rules, method, body)
         if path == f"/organizations/{slug}/monitors/" and method == "POST":
             return self._create_monitor(org, body)
         if path == f"/organizations/{slug}/monitors/":
@@ -177,9 +174,6 @@ class FakeSentry:
             return _ok(org.projects[environments.group(1)]["environments"])
         if environments and method == "PUT":
             return self._hide_environments(org, environments.group(1), body)
-        rules = re.fullmatch(rf"/projects/{slug}/([^/]+)/rules/?", path)
-        if rules:
-            return self._rules(org, rules.group(1), method, body)
         codeowners = re.fullmatch(rf"/projects/{slug}/([^/]+)/codeowners/?", path)
         if codeowners and method == "GET":
             return _ok(org.projects[codeowners.group(1)]["codeowners"])
@@ -317,7 +311,6 @@ class FakeSentry:
                 }
             ],
             "environments": [],
-            "rules": [],
             "codeowners": [],
             "hooks": [],
             "detectors": [
@@ -403,14 +396,6 @@ class FakeSentry:
             if item["name"] in body.get("environmentNames", []):
                 item["isHidden"] = body.get("isHidden")
         return _ok(org.projects[slug]["environments"])
-
-    def _rules(self, org: MemoryOrg, slug: str, method: str, body: dict[str, Any]) -> httpx.Response:
-        rules = org.projects[slug]["rules"]
-        if method == "GET":
-            return _ok(rules)
-        created = {"id": _next_from(rules), **body}
-        rules.append(created)
-        return _ok(created, 201)
 
     def _create_detector(self, org: MemoryOrg, slug: str, body: dict[str, Any]) -> httpx.Response:
         project = org.projects[slug]
@@ -551,25 +536,6 @@ def seed() -> FakeSentry:
             {"name": "production", "isHidden": False},
             {"name": "staging", "isHidden": True},
         ],
-        "rules": [
-            {
-                "id": "r1",
-                "name": "Notify on new issue",
-                "actionMatch": "any",
-                "conditions": [{"id": "sentry.rules.conditions.first_seen_event.FirstSeenEventCondition"}],
-                "actions": [{"id": "sentry.mail.actions.NotifyEmailAction", "targetType": "IssueOwners"}],
-            },
-            {
-                "id": "r2",
-                "name": "After hours",
-                "actionMatch": "all",
-                "conditions": [{"id": "sentry.rules.conditions.first_seen_event.FirstSeenEventCondition"}],
-                "actions": [
-                    {"id": "sentry.mail.actions.NotifyEmailAction", "targetType": "IssueOwners"},
-                    {"id": "sentry.integrations.slack.notify_action.SlackNotifyServiceAction", "workspace": "T1"},
-                ],
-            },
-        ],
         "codeowners": [{"id": "co1", "raw": "* @backend"}],
         "hooks": [{"url": "https://example.com/hook", "events": ["event.alert"], "secret": "hook-secret"}],
         "detectors": [
@@ -654,28 +620,6 @@ def seed() -> FakeSentry:
                             "integrationId": "9",
                             "config": {"targetType": "specific", "targetDisplay": "#alerts"},
                         },
-                    ],
-                }
-            ],
-        }
-    )
-    source.alert_rules.append(
-        {
-            "id": "a1",
-            "name": "Error spike",
-            "aggregate": "count()",
-            "query": "is:unresolved",
-            "timeWindow": 60,
-            "projects": ["10"],
-            "dataset": "events",
-            "thresholdType": 0,
-            "triggers": [
-                {
-                    "label": "critical",
-                    "alertThreshold": 100,
-                    "actions": [
-                        {"type": "email", "integrationId": None, "config": {"targetType": "team", "targetIdentifier": "1"}},
-                        {"type": "slack", "integrationId": "9", "config": {"targetType": "specific"}},
                     ],
                 }
             ],
@@ -796,7 +740,6 @@ def _seed_alert_shapes(source: MemoryOrg) -> None:
         "ownership": None,
         "keys": [],
         "environments": [],
-        "rules": [],
         "codeowners": [],
         "hooks": [],
         "detectors": [{"id": "d6", "projectId": "11", "name": "Issue stream", "type": "issue_stream"}],
